@@ -105,6 +105,28 @@ it, rather than just marking a row.
 
 ---
 
+## Atlas and the Automaton agent
+
+They are different things and they do not collide.
+
+**Automaton** reaches this business through the app's scoped agent-key API:
+one `X-Agent-Key`, six whitelisted actions, its own per-key hourly and daily
+caps. It can push leads, build sites and dial leads it created. It cannot read
+revenue totals, transcripts or recordings, and it cannot bill anyone. TWS is
+one of the things it touches, not its purpose.
+
+**Atlas** is the operator. It authenticates as a superadmin and its only job
+is this company.
+
+Nothing here changes Automaton — that repo is untouched. Their limits are
+per-key and entirely separate, so neither consumes the other's allowance.
+Atlas can see what Automaton has been doing (`other_agents_activity`) for one
+reason: two agents working the same market is worse than either working it
+alone, and an empty-looking pipeline may just be one the other agent is
+already on.
+
+---
+
 ## Setup
 
 Atlas must be a **superadmin**, and the app has no endpoint that can create

@@ -278,3 +278,30 @@ than a market change.""",
 )
 async def get_system_health(ctx: ToolContext) -> Any:
     return await ctx.client.get("/admin/system-health")
+
+
+@registry.tool(
+    "other_agents_activity",
+    group="observe",
+    risk=Risk.READ,
+    description="""What OTHER automated agents are doing to this business through the
+app's scoped agent-key API — most importantly the Automaton agent, which pushes leads,
+creates sites and places calls on its own.
+Atlas is not the only thing acting here. Read this before deciding the pipeline is
+empty or that nobody is working a market: another agent may already be on it, and two
+agents working the same list is worse than either working it alone.
+Their limits are per-key and entirely separate from Atlas's, so nothing Atlas does
+consumes their allowance or vice versa.""",
+    schema={"type": "object", "properties": {}, "required": []},
+)
+async def other_agents_activity(ctx: ToolContext) -> dict:
+    keys, usage = await asyncio.gather(
+        _try(ctx.client.get("/admin/agent-keys"), "agent keys"),
+        _try(ctx.client.get("/admin/agent-keys/usage"), "agent key usage"),
+    )
+    return {
+        "keys": keys, "usage": usage,
+        "note": ("These are external automations with narrow, scoped access — they can "
+                 "push leads, build sites and dial leads they created, but cannot read "
+                 "revenue totals, transcripts or recordings. Do not duplicate their work."),
+    }
