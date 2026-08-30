@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: atlas-tws-agent
+    runtime: docker
+    dockerfilePath: ./atlas/Dockerfile
+    dockerContext: ./atlas
+    plan: starter
+    healthCheckPath: /health
+    # One instance only. The scheduler lives in the process, so scaling to two
+    # would run two agents against one business.
+    numInstances: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TWS_API_URL
+        sync: false
+      - key: TWS_EMAIL
+        sync: false
+      - key: TWS_PASSWORD
+        sync: false
+      - key: TWS_CRON_SECRET
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: ATLAS_CONSOLE_API_KEY
+        generateValue: true
+      - key: ATLAS_CORS_ORIGINS
+        sync: false
+      # Ships inert on purpose: lowest useful authority, sandbox on. Raise both
+      # from the console once you have read a few cycles.
+      - key: ATLAS_AUTONOMY
+        value: recommend
+      - key: ATLAS_SANDBOX
+        value: "true"
+      - key: ATLAS_DAILY_LLM_BUDGET_USD
+        value: "25"
+      - key: ATLAS_TICK_SECONDS
+        value: "900"
