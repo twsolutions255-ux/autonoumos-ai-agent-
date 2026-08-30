@@ -37,7 +37,7 @@ log = logging.getLogger("atlas.loop")
 
 # Importing the tool modules is what registers them. Without this the registry
 # is empty and Atlas has no hands.
-from ..tools import comms, growth, money, observe, reflect  # noqa: E402,F401
+from ..tools import clientcare, comms, growth, money, observe, reflect  # noqa: E402,F401
 
 
 class Runtime:

@@ -25,7 +25,7 @@ from atlas.memory.store import MemoryStore
 from atlas.tools.registry import registry
 # Importing the tool modules is what registers them — the same thing the
 # runtime does at import time. Without it the registry is empty.
-from atlas.tools import comms, growth, money, observe, reflect  # noqa: F401
+from atlas.tools import clientcare, comms, growth, money, observe, reflect  # noqa: F401
 from atlas.tws.client import TWSClient, TWSError
 
 
@@ -334,3 +334,25 @@ async def test_owner_directives_are_always_recalled(h):
         await h.memory.remember(kind="fact", title=f"noise {i}", body="filler")
     mems = await h.memory.recall("something unrelated entirely", limit=5)
     assert any(m.kind == "directive" for m in mems)
+
+
+# ---------------------------------------------------------------- client care
+
+@pytest.mark.asyncio
+async def test_client_scoped_analysis_sends_client_id_as_a_query_param(h):
+    """The app takes client_id in the QUERY STRING on these, not the body, and
+    400s a superadmin who omits it. Getting that wrong makes every client-care
+    tool fail with a message about a missing field that IS being sent."""
+    out = await h.call("analyze_client_website", {"client_id": "c1"})
+    assert out["client_id"] == "c1"
+    assert state.analyses == [("website", "c1")]
+
+
+@pytest.mark.asyncio
+async def test_a_post_carries_both_a_body_and_query_params(h):
+    out = await h.call("add_client_competitor",
+                       {"client_id": "c1", "name": "Rival Roofing",
+                        "website": "http://rival.example"})
+    assert out["name"] == "Rival Roofing"
+    assert state.competitors == [{"client_id": "c1", "name": "Rival Roofing",
+                                  "website": "http://rival.example"}]

@@ -51,6 +51,8 @@ class State:
         self.jobs_run: list = []
         self.expire_next_token = False
         self.calls: list = []          # every request, for assertions
+        self.analyses: list = []
+        self.competitors: list = []
 
 
 state = State()
@@ -306,6 +308,30 @@ async def set_autonomy(request: Request):
 async def dnc(request: Request, phone: str = "", email: str = ""):
     auth(request)
     return {"listed": phone == "+15551110001", "since": None}
+
+
+# ---- client-scoped analysis ----------------------------------------------
+# These take client_id as a QUERY parameter, not in the body, and 400 for a
+# superadmin who omits it. That asymmetry is easy to get wrong from a client
+# library, so it is reproduced exactly.
+
+@app.post("/api/website/analyze")
+async def analyze_website(request: Request, client_id: str = ""):
+    auth(request)
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id required")
+    state.analyses.append(("website", client_id))
+    return {"client_id": client_id, "findings": ["no click-to-call on mobile"]}
+
+
+@app.post("/api/competitors")
+async def add_competitor(request: Request, client_id: str = ""):
+    auth(request)
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id required")
+    body = await request.json()
+    state.competitors.append({"client_id": client_id, **body})
+    return {"ok": True, "name": body.get("name")}
 
 
 # ---- tenant scoping + internal jobs --------------------------------------
