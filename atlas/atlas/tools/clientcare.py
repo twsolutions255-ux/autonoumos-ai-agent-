@@ -195,3 +195,68 @@ find that out is the one you are still in, not the one after.""",
 )
 async def get_client_guarantee(ctx: ToolContext, client_id: str, month: str = "") -> Any:
     return await ctx.client.get(f"/admin/clients/{client_id}/guarantee", month=month or None)
+
+
+# --------------------------------------------------------------------------
+# talking to a paying client
+# --------------------------------------------------------------------------
+#
+# Everything in comms.py is internal — the team, the AI employees, the owner.
+# This is the one place Atlas addresses a customer, and it is deliberately
+# separate: a message to a paying client is the company speaking, not a note
+# between colleagues.
+
+@registry.tool(
+    "message_client",
+    group="clients",
+    risk=Risk.EXTERNAL_COMMS,
+    rate_bucket="outreach",
+    description="""Send a message to a paying client, in the thread they already use to
+talk to the agency. They see it as coming from TW Solutions, so write like the company,
+not like a bot.
+This is the highest-value use of your attention on the retention side: a client whose
+receptionist has gone quiet, or who has never graded a single call, will not complain —
+they will decide the product does not work and leave at renewal, and by then it has been
+weeks. Reaching out with their real numbers, before they ask, is what stops that.
+Lead with something specific and true about their account. Never send a check-in that
+could have been sent to anybody.""",
+    schema={
+        "type": "object",
+        "properties": {
+            "client_id": {"type": "string"},
+            "message": {"type": "string", "description": "Grounded in their real numbers."},
+        },
+        "required": ["client_id", "message"],
+    },
+)
+async def message_client(ctx: ToolContext, client_id: str, message: str) -> str:
+    await ctx.client.post("/messages", {"text": message, "client_id": client_id})
+    return f"Sent to client {client_id} in their agency thread."
+
+
+@registry.tool(
+    "read_client_messages",
+    group="clients",
+    risk=Risk.READ,
+    description="""The message thread with one client. Read it before writing — a client
+who has already asked something and not been answered needs an answer, not a check-in.""",
+    schema={
+        "type": "object",
+        "properties": {"client_id": {"type": "string"}},
+        "required": ["client_id"],
+    },
+)
+async def read_client_messages(ctx: ToolContext, client_id: str) -> Any:
+    return await ctx.client.get("/messages", client_id=client_id)
+
+
+@registry.tool(
+    "client_message_threads",
+    group="clients",
+    risk=Risk.READ,
+    description="""Every client thread with its unread count — who is waiting on a reply.
+An unanswered client is the cheapest churn there is to prevent. Check this every cycle.""",
+    schema={"type": "object", "properties": {}, "required": []},
+)
+async def client_message_threads(ctx: ToolContext) -> Any:
+    return await ctx.client.get("/admin/messages/threads")

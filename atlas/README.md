@@ -265,11 +265,12 @@ atlas/
   guardrails/        the four gates — the whole safety model in one file
   llm/engine.py      the agentic loop: cached prompt, gated tools, real budget
   memory/            episodic and semantic memory, with supersession
-  tools/             69 tools over 100 verified endpoints
+  tools/             82 tools over verified endpoints
     observe.py         seeing the business
     comms.py           humans, AI employees, the AI Operator
     growth.py          the acquisition pipeline
     money.py           revenue, costs, and the fastest paths to more
+    clientcare.py      keeping and growing the clients already paying
     reflect.py         its own plan, memory and briefings
   brain/
     prompts.py       who it is and how it decides

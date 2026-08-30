@@ -436,3 +436,20 @@ async def test_the_dialler_brake_works_from_the_lowest_rung(h):
     h.policy.sandbox = True
     out = await h.call("stop_cold_calling")
     assert out["stopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_messaging_a_paying_client_is_external_and_gated(h):
+    """Everything else in comms is internal. This one is the company speaking
+    to a customer, so it costs what reaching the outside world costs."""
+    h.policy.set_autonomy("assist")
+    out = await h.call("message_client",
+                       {"client_id": "c1", "message": "Your receptionist has been quiet."})
+    assert "NOT DONE" in out
+    assert state.client_messages == []
+
+    h.policy.set_autonomy("operate")
+    out = await h.call("message_client",
+                       {"client_id": "c1", "message": "Your receptionist has been quiet."})
+    assert "Sent to client c1" in out
+    assert state.client_messages[0]["client_id"] == "c1"

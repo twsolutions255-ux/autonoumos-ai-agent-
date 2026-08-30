@@ -54,6 +54,7 @@ class State:
         self.calls: list = []          # every request, for assertions
         self.analyses: list = []
         self.competitors: list = []
+        self.client_messages: list = []
 
 
 state = State()
@@ -355,6 +356,16 @@ async def add_competitor(request: Request, client_id: str = ""):
     body = await request.json()
     state.competitors.append({"client_id": client_id, **body})
     return {"ok": True, "name": body.get("name")}
+
+
+@app.post("/api/messages")
+async def send_client_message(request: Request):
+    auth(request)
+    body = await request.json()
+    if not body.get("client_id"):
+        raise HTTPException(status_code=400, detail="client_id required")
+    state.client_messages.append(body)
+    return {"id": str(uuid.uuid4()), **body}
 
 
 # ---- tenant scoping + internal jobs --------------------------------------
