@@ -139,6 +139,11 @@ class Settings:
 
     # ---------- cadence ----------
     tick_seconds: int = 900
+    #: Drive the app's own scheduled jobs on a timer, independently of the
+    #: reasoning cycle. Off by default: these jobs call strangers and email
+    #: clients, so switching them on is an outward-facing decision.
+    drive_app_jobs: bool = False
+    app_job_seconds: int = 300
     morning_brief_hour: int = 7
     evening_brief_hour: int = 19
     timezone: str = "America/New_York"
@@ -251,6 +256,8 @@ def load() -> Settings:
         approval_threshold_usd=_float("ATLAS_APPROVAL_THRESHOLD_USD", 250.0),
 
         tick_seconds=_int("ATLAS_TICK_SECONDS", 900),
+        drive_app_jobs=_bool("ATLAS_DRIVE_APP_JOBS", False),
+        app_job_seconds=_int("ATLAS_APP_JOB_SECONDS", 300),
         morning_brief_hour=_int("ATLAS_MORNING_HOUR", 7),
         evening_brief_hour=_int("ATLAS_EVENING_HOUR", 19),
         timezone=_env("ATLAS_TIMEZONE", "America/New_York"),

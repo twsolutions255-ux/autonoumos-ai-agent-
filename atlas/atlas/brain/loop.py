@@ -396,5 +396,63 @@ class Runtime:
                 log.exception("atlas: scheduler tick failed")
             await asyncio.sleep(max(60, self.settings.tick_seconds))
 
+    def may_drive_app_jobs(self) -> tuple:
+        """May the job driver fire right now, and if not, why not?
+
+        Split out from the loop so it is testable without waiting out a real
+        timer — a guard that is only exercised by sleeping is a guard nobody
+        ever actually tests.
+        """
+        if self.policy.kill_switch:
+            return False, "the kill switch is on"
+        if self.policy.sandbox:
+            return False, "sandbox mode is on"
+        # Same rung the equivalent tool needs: these jobs call and email real
+        # people, so they must never outrun Atlas's own authority.
+        if not self.policy._allows("operate"):
+            return False, f"autonomy is '{self.policy.autonomy}', below 'operate'"
+        if self.client is None:
+            return False, "there is no connection to the app"
+        return True, ""
+
+    async def drive_app_jobs_forever(self) -> None:
+        """Be the clock the app does not have.
+
+        TWS has no task queue. Its in-process scheduler is off by default, and
+        on a free instance it sleeps overnight — which is exactly when the
+        nightly digest and the audit window need it. Its five cron jobs run
+        from GitHub Actions against a hardcoded hostname that breaks the day
+        the service is renamed.
+
+        Atlas is already a long-lived process that holds the cron secret, so it
+        can be the reliable driver. Two jobs are worth a tight loop:
+        speed-to-lead, because a lead called in minutes converts far better
+        than one called tomorrow, and workflows, because that is where
+        scheduled follow-ups fire.
+
+        Deliberately NOT model-gated. This is plumbing that should run on time
+        every time, not a decision to be re-reasoned every five minutes. It is
+        still gated by the kill switch, sandbox and autonomy, because it does
+        reach the outside world.
+        """
+        if not self.settings.can_run_jobs:
+            log.warning("atlas: asked to drive the app's jobs but no cron secret is "
+                        "set; not starting")
+            return
+        log.info("atlas: driving the app's speed-to-lead and workflow jobs every %ss",
+                 self.settings.app_job_seconds)
+        while self._running:
+            await asyncio.sleep(max(60, self.settings.app_job_seconds))
+            allowed, _why = self.may_drive_app_jobs()
+            if not allowed:
+                continue
+            for path in ("/internal/speed-to-lead/drain", "/internal/workflows/run"):
+                try:
+                    await self.client.run_internal_job(path)
+                except TWSError as e:
+                    log.warning("atlas: job %s failed: %s", path, e)
+                except Exception:
+                    log.exception("atlas: job %s raised", path)
+
     def stop(self) -> None:
         self._running = False

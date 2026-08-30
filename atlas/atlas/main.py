@@ -36,12 +36,13 @@ log = logging.getLogger("atlas")
 
 runtime = Runtime(settings)
 _scheduler_task: Optional[asyncio.Task] = None
+_jobs_task: Optional[asyncio.Task] = None
 _boot: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _scheduler_task, _boot
+    global _scheduler_task, _jobs_task, _boot
     try:
         _boot = await runtime.start()
         log.info("atlas: booted — %s tools, autonomy=%s, sandbox=%s",
@@ -61,15 +62,19 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("atlas: scheduler not started (no model configured, or tick disabled)")
 
+    if settings.drive_app_jobs and runtime.client is not None:
+        _jobs_task = asyncio.create_task(runtime.drive_app_jobs_forever())
+
     yield
 
     runtime.stop()
-    if _scheduler_task:
-        _scheduler_task.cancel()
-        try:
-            await _scheduler_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task in (_scheduler_task, _jobs_task):
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     await runtime.close()
 
 
@@ -162,6 +167,7 @@ async def status() -> dict:
         "spend_today_usd": round(runtime._spend_today, 4),
         "daily_budget_usd": settings.daily_llm_budget_usd,
         "scheduler_running": bool(_scheduler_task and not _scheduler_task.done()),
+        "driving_app_jobs": bool(_jobs_task and not _jobs_task.done()),
         "at": iso(),
     }
 

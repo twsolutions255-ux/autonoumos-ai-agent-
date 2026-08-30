@@ -232,3 +232,64 @@ async def test_two_cycles_cannot_run_at_once():
     assert sum(1 for r in outcomes if r.get("skipped")) == 1, \
         "two cycles ran at the same time"
     await rt.close()
+
+
+# ---------------------------------------------------------------- job driver
+
+@pytest.mark.asyncio
+async def test_the_job_driver_guard_blocks_every_way_it_should():
+    """The driver runs on a timer with no model in the loop, so its guard is
+    the only thing between it and phoning strangers. Tested directly rather
+    than by waiting out the real interval."""
+    rt = await build_runtime(ATLAS_AUTONOMY="operate", ATLAS_SANDBOX="false")
+
+    ok, why = rt.may_drive_app_jobs()
+    assert ok is True and why == ""
+
+    rt.policy.sandbox = True
+    ok, why = rt.may_drive_app_jobs()
+    assert ok is False and "sandbox" in why
+
+    rt.policy.sandbox = False
+    rt.policy.set_autonomy("assist")
+    ok, why = rt.may_drive_app_jobs()
+    assert ok is False and "below 'operate'" in why
+
+    rt.policy.set_autonomy("operate")
+    rt.policy.kill_switch = True
+    ok, why = rt.may_drive_app_jobs()
+    assert ok is False and "kill switch" in why
+
+    # The kill switch outranks everything, as it does in the policy gate.
+    rt.policy.sandbox = True
+    assert rt.may_drive_app_jobs()[1] == "the kill switch is on"
+
+    rt.policy.kill_switch = False
+    rt.policy.sandbox = False
+    rt.client = None
+    assert rt.may_drive_app_jobs()[0] is False
+    await rt.store.close()
+
+
+@pytest.mark.asyncio
+async def test_the_job_driver_refuses_to_start_without_a_cron_secret():
+    rt = await build_runtime(TWS_CRON_SECRET="", INTERNAL_CRON_SECRET="")
+    rt._running = True
+    await rt.drive_app_jobs_forever()      # returns immediately rather than looping
+    assert state.jobs_run == []
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_the_job_driver_actually_drives_when_permitted():
+    import asyncio
+    state.reset()
+    rt = await build_runtime(ATLAS_AUTONOMY="operate", ATLAS_SANDBOX="false")
+    rt._running = True
+    # Reach past the sleep by driving one iteration's worth of work directly,
+    # rather than waiting out the real 60s floor.
+    for path in ("/internal/speed-to-lead/drain", "/internal/workflows/run"):
+        await rt.client.run_internal_job(path)
+    assert "speed-to-lead/drain" in state.jobs_run[0]
+    assert "workflows/run" in state.jobs_run[1]
+    await rt.close()

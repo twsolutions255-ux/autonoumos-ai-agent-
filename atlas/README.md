@@ -185,10 +185,21 @@ folklore:
 - **The app drafts cold outreach; it does not send it.** Atlas will never
   claim to have emailed anyone. It builds the site, drafts the message, and a
   human sends it.
-- **Several scheduled jobs only run if something outside the app calls them.**
-  Atlas can drive them on demand, which matters most right after it creates
-  work for one — draining speed-to-lead the moment a lead arrives turns
-  "called tomorrow" into "called within minutes".
+- **The app has no task queue at all.** Background work is bare
+  `asyncio.create_task` that dies with the process, plus an in-process
+  scheduler that is off by default and, on a free instance, asleep overnight —
+  exactly when the nightly digest and the audit window need it. The five cron
+  jobs run from GitHub Actions against a hardcoded hostname that breaks the day
+  the service is renamed.
+
+  Atlas can drive those jobs on demand (`run_scheduled_job`), which matters
+  most right after it creates work for one — draining speed-to-lead the moment
+  a lead arrives turns "called tomorrow" into "called within minutes". It can
+  also be the standing clock: set `ATLAS_DRIVE_APP_JOBS=true` and it drives
+  speed-to-lead and workflow follow-ups on a timer, with no model in the loop,
+  because plumbing should run on time rather than be re-reasoned every five
+  minutes. Off by default, and still gated by the kill switch, sandbox and
+  autonomy — those jobs call and email real people.
 
 ---
 
