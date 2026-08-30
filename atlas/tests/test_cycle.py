@@ -1,0 +1,234 @@
+"""A whole autonomous cycle, start to finish.
+
+Everything real except Claude: the runtime, the policy, the memory, the tools
+and the HTTP client all run, against the fake TWS app. The model is scripted,
+so the test asserts what the machinery does with a decision rather than
+pretending to test the decision itself.
+
+This is the test that would catch the failure that matters most — a cycle that
+appears to succeed while having done nothing, or having done something it did
+not report.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from types import SimpleNamespace
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import httpx
+import pytest
+
+from tests.fake_tws import CRON_SECRET, GOOD_EMAIL, GOOD_PASSWORD, app as tws_app, state
+from tests.test_engine import install, text_block, tool_block, usage
+from tests.test_integration import MockStore, settings_for
+
+from atlas.brain.loop import Runtime
+from atlas.llm.engine import Engine
+from atlas.tws.client import TWSClient
+
+
+@pytest.fixture(autouse=True)
+def _reset():
+    state.reset()
+    yield
+
+
+async def build_runtime(**over):
+    """A Runtime wired to the fake app and a mock database, not started."""
+    settings = settings_for(**over)
+    rt = Runtime(settings)
+    rt.store = MockStore()
+    from atlas.memory.store import MemoryStore
+    rt.memory = MemoryStore(rt.store)
+
+    rt.client = TWSClient(settings.tws_api_url, email=settings.tws_email,
+                          password=settings.tws_password,
+                          cron_secret=settings.tws_cron_secret,
+                          audit=rt._audit_http)
+    rt.client._client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=tws_app),
+        base_url="http://tws.test", timeout=10)
+    rt.identity = await rt.client.verify_access()
+    rt.engine = Engine(settings, dispatch=rt._dispatch,
+                       spend_today=lambda: rt._spend_today)
+    await rt.store.ensure_indexes()
+    return rt
+
+
+@pytest.mark.asyncio
+async def test_a_morning_cycle_reads_plans_speaks_and_briefs():
+    rt = await build_runtime(ATLAS_AUTONOMY="operate", ATLAS_SANDBOX="false")
+    install(rt.engine, [
+        # Look at the business.
+        SimpleNamespace(content=[tool_block("business_snapshot", {}, "t1")],
+                        stop_reason="tool_use", usage=usage()),
+        # Decide, and write the plan down.
+        SimpleNamespace(content=[tool_block("set_plan", {
+            "north_star": "Twelve live clients by the end of the quarter.",
+            "rationale": "Two deals are won but never activated — that is the fastest money.",
+            "objectives": [{"objective": "Activate every won deal",
+                            "measure": "deals awaiting setup",
+                            "target": "0 by Friday"}],
+        }, "t2")], stop_reason="tool_use", usage=usage()),
+        # Tell the team, and brief the owner.
+        SimpleNamespace(content=[
+            tool_block("post_to_channel",
+                       {"channel": "general",
+                        "message": "Today: activate the two won deals before any new outreach."}, "t3"),
+            tool_block("brief_owner", {
+                "kind": "morning",
+                "headline": "Two won deals are not live yet",
+                "body": "Echo Electric is signed and has no account. That is live MRR sitting still.",
+            }, "t4"),
+        ], stop_reason="tool_use", usage=usage()),
+        SimpleNamespace(content=[text_block(
+            "Priority today is activating the two won deals. Told the team; briefed you.")],
+            stop_reason="end_turn", usage=usage()),
+    ])
+
+    record = await rt.run_cycle("morning")
+
+    assert record["status"] == "done"
+    assert record["kind"] == "morning"
+    assert record["actions"] == 4
+    assert "activating the two won deals" in record["summary"]
+
+    # The cycle was persisted, not just returned.
+    stored = await rt.store["cycles"].find_one({"id": record["id"]}, {"_id": 0})
+    assert stored["status"] == "done" and stored["summary"]
+
+    # The plan is real and versioned.
+    plan = await rt.store["plan"].find_one({}, {"_id": 0}, sort=[("version", -1)])
+    assert plan["version"] == 1
+    assert "Twelve live clients" in plan["north_star"]
+
+    # The team was actually told, in the real app.
+    assert any("activate the two won deals" in m["body"].lower() for m in state.messages)
+
+    # The briefing is retrievable.
+    brief = await rt.store["briefs"].find_one({"kind": "morning"}, {"_id": 0})
+    assert "not live yet" in brief["headline"]
+
+    # Every tool call is in the audit trail, tagged to this cycle.
+    actions = await rt.store["actions"].find({"cycle_id": record["id"]}, {"_id": 0}).to_list(20)
+    assert {a["tool"] for a in actions} == {
+        "business_snapshot", "set_plan", "post_to_channel", "brief_owner"}
+    assert all(a["outcome"] == "allow" for a in actions)
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_action_is_recorded_and_the_cycle_still_finishes():
+    """The failure mode that matters: acting blocked, reporting success."""
+    rt = await build_runtime(ATLAS_AUTONOMY="assist", ATLAS_SANDBOX="false")
+    install(rt.engine, [
+        SimpleNamespace(content=[tool_block("release_cold_call_batch", {}, "t1")],
+                        stop_reason="tool_use", usage=usage()),
+        SimpleNamespace(content=[text_block(
+            "I could not release the batch — my authority does not cover placing calls.")],
+            stop_reason="end_turn", usage=usage()),
+    ])
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert state.released == 0, "a blocked tool actually dialled"
+
+    actions = await rt.store["actions"].find({"cycle_id": record["id"]}, {"_id": 0}).to_list(10)
+    assert len(actions) == 1
+    assert actions[0]["outcome"] == "deny"
+    assert actions[0]["gate"] == "autonomy"
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_an_action_needing_approval_is_queued_not_performed():
+    rt = await build_runtime(ATLAS_AUTONOMY="autopilot", ATLAS_SANDBOX="false")
+    install(rt.engine, [
+        SimpleNamespace(content=[tool_block(
+            "set_cold_call_autonomy", {"enabled": True, "daily_cap": 40}, "t1")],
+            stop_reason="tool_use", usage=usage()),
+        SimpleNamespace(content=[text_block("Queued for your approval.")],
+                        stop_reason="end_turn", usage=usage()),
+    ])
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert state.autonomy["enabled"] is False, "queued action was performed anyway"
+
+    pending = await rt.store["approvals"].find({"status": "pending"}, {"_id": 0}).to_list(5)
+    assert len(pending) == 1
+    assert pending[0]["tool"] == "set_cold_call_autonomy"
+    assert pending[0]["args"]["daily_cap"] == 40
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_the_kill_switch_makes_a_cycle_a_no_op():
+    rt = await build_runtime()
+    rt.policy.kill_switch = True
+    install(rt.engine, [])          # asking the model at all would raise
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert "kill switch" in record["summary"].lower()
+    assert record["actions"] == 0
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_the_next_cycle_can_see_what_the_last_one_did():
+    """Memory across cycles is the whole point — verify it reaches the prompt."""
+    rt = await build_runtime()
+    install(rt.engine, [SimpleNamespace(
+        content=[text_block("Dentists are not converting; stopping that market.")],
+        stop_reason="end_turn", usage=usage())])
+    await rt.run_cycle("evening")
+
+    await rt.memory.remember(kind="lesson", title="Dentists do not convert",
+                             body="0 of 35 touches over two weeks", importance=5)
+
+    opener = await rt._opening_message("morning", "")
+    assert "Dentists do not convert" in opener
+    assert "not converting; stopping that market" in opener
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_that_crashes_still_leaves_a_record():
+    rt = await build_runtime()
+
+    class Boom:
+        def stream(self, **kw):
+            raise RuntimeError("the model is unreachable")
+    rt.engine.client = SimpleNamespace(beta=SimpleNamespace(messages=Boom()),
+                                       messages=Boom())
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "failed"
+    assert "unreachable" in record["error"]
+    stored = await rt.store["cycles"].find_one({"id": record["id"]}, {"_id": 0})
+    assert stored["status"] == "failed" and stored["ended_at"]
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_two_cycles_cannot_run_at_once():
+    """A second scheduler tick must not start a parallel agent."""
+    import asyncio
+    rt = await build_runtime()
+    install(rt.engine, [SimpleNamespace(content=[text_block("done")],
+                                        stop_reason="end_turn", usage=usage())])
+
+    async def slow(*a, **k):
+        await asyncio.sleep(0.2)
+        return SimpleNamespace(text="done", usage=__import__(
+            "atlas.llm.engine", fromlist=["Usage"]).Usage(), actions=[],
+            stop_reason="end_turn", iterations=1, truncated=False, refusal=None)
+    rt.engine.run = slow
+
+    first, second = await asyncio.gather(rt.run_cycle("work"), rt.run_cycle("work"))
+    outcomes = [first, second]
+    assert sum(1 for r in outcomes if r.get("skipped")) == 1, \
+        "two cycles ran at the same time"
+    await rt.close()
