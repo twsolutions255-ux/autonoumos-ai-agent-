@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ..guardrails.policy import Risk
 from .registry import ToolContext, registry

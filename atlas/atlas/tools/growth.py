@@ -508,3 +508,118 @@ async def run_scheduled_job(ctx: ToolContext, job: str) -> Any:
     path, what = entry
     res = await ctx.client.run_internal_job(path)
     return {"job": job, "did": what, "result": res}
+
+
+# --------------------------------------------------------------------------
+# the setter pool
+# --------------------------------------------------------------------------
+#
+# THREE separate things in this app are called "leads" in conversation, and
+# confusing them is the fastest way to make a mess:
+#
+#   prospects            the Prospect Engine — superadmin-only, gets a free
+#                        site built and grounded outreach drafted. scan_market
+#                        and build_prospect_pitch above work on these.
+#   the shared pool      businesses the human setters claim and work by phone
+#                        and in person. The tools below work on these.
+#   cold-call prospects  the dialler's own queue, with its own state machine
+#                        and TCPA guards. stage/release above work on these.
+#
+# They are different collections with different rules. A business in one is not
+# in the others.
+
+@registry.tool(
+    "search_pool_candidates",
+    group="growth",
+    risk=Risk.READ,
+    description="""Search a trade and town and rank what comes back against the company's
+own ideal-customer profile, WITHOUT saving anything.
+This feeds the shared pool the human setters work — a different list from the Prospect
+Engine, which is the one that gets a free site built. Use this when the constraint is
+that the reps have nothing good to call, rather than that outreach is not converting.
+Nothing is saved, so a bad search costs nothing. Review the ranking, then add only the
+ones worth a rep's time with add_pool_leads.""",
+    schema={
+        "type": "object",
+        "properties": {
+            "trade": {"type": "string"},
+            "location": {"type": "string"},
+        },
+        "required": ["trade", "location"],
+    },
+)
+async def search_pool_candidates(ctx: ToolContext, trade: str, location: str) -> Any:
+    return await ctx.client.post("/leads/discover", {"trade": trade, "location": location})
+
+
+@registry.tool(
+    "add_pool_leads",
+    group="growth",
+    risk=Risk.STAGE,
+    description="""Add chosen businesses to the shared pool for the setters to claim.
+Add the ones that scored well and have a phone number — a candidate without one is
+skipped by the app anyway, because the pool enforces uniqueness on the number.
+Be selective. Filling the pool with everything a search returned is how a team stops
+trusting the pool and goes back to finding their own.""",
+    schema={
+        "type": "object",
+        "properties": {
+            "candidates": {
+                "type": "array",
+                "description": "Rows from search_pool_candidates. Up to 40 per call.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "phone": {"type": "string"},
+                        "address": {"type": "string"},
+                        "trade": {"type": "string"},
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["candidates"],
+    },
+)
+async def add_pool_leads(ctx: ToolContext, candidates: list) -> Any:
+    res = await ctx.client.post("/leads/discover/add",
+                                {"candidates": list(candidates or [])[:40]})
+    return {"result": res,
+            "note": "These are now claimable by any setter. Tell the team in #setters "
+                    "that fresh leads are in, or they will not know."}
+
+
+@registry.tool(
+    "get_lead_pool",
+    group="growth",
+    risk=Risk.READ,
+    description="""The unclaimed shared pool — what the setters have left to work.
+An empty pool means the team is idle; a pool that never shrinks means they are not
+working it, and those need opposite responses. Check which it is before adding more.""",
+    schema={"type": "object", "properties": {}, "required": []},
+)
+async def get_lead_pool(ctx: ToolContext) -> dict:
+    data = await ctx.client.get("/leads/pool")
+    rows = data.get("leads", []) if isinstance(data, dict) else (data or [])
+    return {"unclaimed": data.get("count", len(rows)) if isinstance(data, dict) else len(rows),
+            "sample": rows[:20]}
+
+
+@registry.tool(
+    "get_lead_stats",
+    group="growth",
+    risk=Risk.READ,
+    description="""What the setters actually did over a window, per rep: calls made,
+contacts reached, appointments booked. This is the activity-versus-outcome picture —
+use it to tell 'they are not working' from 'the leads are bad', which look identical in
+a headline number and need opposite fixes.""",
+    schema={
+        "type": "object",
+        "properties": {"days": {"type": "integer", "description": "Window, 1-90. Default 7."}},
+        "required": [],
+    },
+)
+async def get_lead_stats(ctx: ToolContext, days: int = 7) -> Any:
+    return await ctx.client.get("/admin/leads/stats", days=max(1, min(int(days or 7), 90)))

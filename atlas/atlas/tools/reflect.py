@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from ..db import iso
 from ..guardrails.policy import Risk

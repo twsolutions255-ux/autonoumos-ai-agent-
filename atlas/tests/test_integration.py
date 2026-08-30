@@ -6,7 +6,6 @@ asks for a tool gets exactly the behaviour the policy says it should.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 def _env(name: str, default: str = "") -> str:
