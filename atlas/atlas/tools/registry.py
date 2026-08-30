@@ -73,7 +73,7 @@ class Registry:
              risk: Risk = Risk.READ, requires: Optional[str] = None,
              rate_bucket: Optional[str] = None, group: str = "general",
              estimate_cost: Optional[Callable[[dict], float]] = None,
-             always_approve: bool = False):
+             always_approve: bool = False, safety_action: bool = False):
         """Decorator registering one tool."""
         def wrap(fn: Callable[..., Awaitable[Any]]):
             if name in self._tools:
@@ -83,7 +83,9 @@ class Registry:
                 description=description,
                 input_schema=schema or {"type": "object", "properties": {}, "required": []},
                 policy=ToolPolicy(risk=risk, requires=requires, rate_bucket=rate_bucket,
-                                  estimate_cost=estimate_cost, always_approve=always_approve),
+                                  estimate_cost=estimate_cost,
+                                  always_approve=always_approve,
+                                  safety_action=safety_action),
                 handler=fn,
                 group=group,
             )

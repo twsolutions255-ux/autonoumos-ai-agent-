@@ -69,6 +69,9 @@ what it did.
 Four gates, checked in this order before **every** tool call. The order
 matters: a stopped agent burns no budget deciding it is stopped.
 
+0. **Safety actions** — anything that makes the situation *safer* (today: the
+   cold-call brake) passes every gate, including the kill switch. A brake you
+   have to be senior enough to pull is not a brake.
 1. **Kill switch** — one flag, effective mid-cycle. Reads still work.
 2. **Autonomy** — is this class of action unlocked at all?
 3. **Rate limit** — has this channel already done enough this hour or day?
@@ -82,8 +85,8 @@ from "new endpoint" to "the agent can call it" that skips the decision.
 | Level | What it may do |
 |---|---|
 | `observe` | Look. Change nothing, say nothing. |
-| `recommend` | Plan and brief you. No action on the business. **(ships here)** |
-| `assist` | Talk to the team and the AI employees, queue work for a human to release. |
+| `recommend` | Plan and brief you. Nothing in the business changes — the only writes go into Atlas's own memory. **(ships here)** |
+| `assist` | Change data in the app (scan markets, build sites, run analyses), talk to the team and the AI employees, queue work for a human to release. |
 | `operate` | Run the acquisition pipeline end to end. |
 | `autopilot` | Money-adjacent and irreversible actions, each still capped. |
 
@@ -92,9 +95,18 @@ waste a turn reaching for one.
 
 ### Sandbox
 
-On by default. Nothing reaches the outside world — no calls, no staged
-batches, no money. Atlas still reads, reasons, plans and briefs, so you can
-judge its decisions from the record before you trust it with any of them.
+On by default. Nothing changes and nothing reaches the outside world — no
+calls, no staged batches, no money, and no edits to the app's data either.
+Atlas still reads, reasons, plans and briefs, so you can judge its decisions
+from the record before you trust it with any of them.
+
+That last part is load-bearing and I got it wrong the first time. Twelve tools
+that write to the *app's* database were classed as "internal" — a word the code
+reserved for Atlas's own memory — which made them reachable at the shipped
+default, invisible to the sandbox. An agent editing the CRM while the operator
+believes it is rehearsing is exactly the failure this mode exists to prevent.
+`Risk.APP_WRITE` now names that class, requires `assist`, and the sandbox
+blocks it; two tests pin the promise so it cannot quietly come untrue again.
 
 ### What always needs you
 

@@ -47,6 +47,7 @@ class State:
         ]
         self.staged: list = []
         self.released = 0
+        self.stopped = 0
         self.autonomy = {"enabled": False, "daily_cap": 30}
         self.jobs_run: list = []
         self.expire_next_token = False
@@ -288,6 +289,28 @@ async def start_batch(request: Request):
     state.released += len(state.staged)
     n, state.staged = len(state.staged), []
     return {"ok": True, "approved": n, "note": "Calling has started."}
+
+
+@app.post("/api/admin/cold-calling/stop")
+async def stop_calling(request: Request):
+    auth(request)
+    n, state.staged = len(state.staged), []
+    state.stopped += 1
+    return {"ok": True, "unapproved": n,
+            "note": "Stopped. Nothing else will dial."}
+
+
+@app.post("/api/admin/prospects/{prospect_id}/touch")
+async def record_touch(prospect_id: str, request: Request):
+    auth(request)
+    p = next((x for x in state.prospects if x["id"] == prospect_id), None)
+    if not p:
+        raise HTTPException(status_code=404, detail="Prospect not found")
+    body = await request.json()
+    p["touches"].append(body)
+    # The real app advances the prospect out of the "not yet contacted" lists.
+    p["status"] = "contacted"
+    return {"ok": True, "touches": len(p["touches"])}
 
 
 @app.get("/api/admin/cold-calling/preflight")

@@ -41,7 +41,7 @@ MAX_TOUCHES = 3
 @registry.tool(
     "scan_market",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Find real businesses in one trade and one city, audit the web presence
 of each, and rank them as prospects. This is the top of the acquisition funnel and the
 single highest-leverage thing Atlas can do.
@@ -70,7 +70,7 @@ async def scan_market(ctx: ToolContext, trade: str, location: str, limit: int = 
 @registry.tool(
     "save_market_search",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Save a trade+city so it re-scans by itself overnight, permanently
 topping up the prospect list without anyone asking.
 This is how Atlas turns a one-off scan into a standing source of leads, and it is also
@@ -112,7 +112,7 @@ async def list_market_searches(ctx: ToolContext) -> Any:
 @registry.tool(
     "drop_market_search",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Stop re-scanning a market that is not converting. Use it to keep the
 saved list short, because only the five newest are re-run automatically.""",
     schema={
@@ -142,7 +142,7 @@ async def list_prospects(ctx: ToolContext) -> Any:
 @registry.tool(
     "audit_prospect",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Re-audit one prospect's current website and score it. Use when a
 prospect looks promising but was scanned from a source that carried no website, so the
 original score is unreliable.""",
@@ -205,10 +205,21 @@ async def draft_followup(ctx: ToolContext, prospect_id: str) -> Any:
 @registry.tool(
     "record_outreach_sent",
     group="growth",
-    risk=Risk.INTERNAL,
-    description="""Log that a message really went out to a prospect. Only call this when
-it actually did — the follow-up sequence is timed off these records, and a follow-up
-written against a first message that never left is worse than no follow-up at all.""",
+    risk=Risk.APP_WRITE,
+    requires="operate",
+    description="""Log that a message REALLY went out to a prospect — only ever after a
+human confirms they sent it.
+Read this carefully, because it is the one tool here that can do damage while looking
+harmless. The app has no send path of its own: `build_prospect_pitch` and
+`draft_followup` produce a message for a person to send. So this tool cannot observe a
+send, it can only assert one. The assertion is permanent, it starts the follow-up clock,
+and it moves the prospect to 'contacted', which drops them out of the lists that would
+have surfaced them again.
+Never call it for a message you drafted and nobody sent. If you are not certain a human
+sent it, do not log it — an un-logged send costs one duplicate message, and a false log
+costs the prospect entirely.
+It needs the same authority as actually reaching someone, because that is what it
+claims happened.""",
     schema={
         "type": "object",
         "properties": {
@@ -216,7 +227,7 @@ written against a first message that never left is worse than no follow-up at al
             "channel": {"type": "string", "enum": list(TOUCH_CHANNELS)},
             "subject": {"type": "string"},
             "body": {"type": "string"},
-            "note": {"type": "string"},
+            "note": {"type": "string", "description": "Who sent it, and how you know."},
         },
         "required": ["prospect_id", "channel"],
     },
@@ -249,7 +260,7 @@ async def convert_prospect(ctx: ToolContext, prospect_id: str) -> Any:
 @registry.tool(
     "site_outreach_copy",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Regenerate the outreach copy for a site already built, citing the real
 faults found on the business's current site. Use when the first message did not land and
 you want a different angle on the same evidence.""",
@@ -366,10 +377,15 @@ async def release_cold_call_batch(ctx: ToolContext) -> Any:
 @registry.tool(
     "stop_cold_calling",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
+    safety_action=True,
     description="""Stop all cold calling immediately and un-approve everything still
 staged. This is the emergency brake for the outbound dialler — use it the moment
-anything looks wrong. Stopping is always safe; ask forgiveness, not permission.""",
+anything looks wrong.
+Deliberately available at every authority level, including the lowest, and in sandbox.
+Every other write is gated; this one is not, because a brake you have to be senior
+enough to pull is not a brake. Stopping is always safe: ask forgiveness, not
+permission.""",
     schema={"type": "object", "properties": {}, "required": []},
 )
 async def stop_cold_calling(ctx: ToolContext) -> Any:
@@ -438,7 +454,7 @@ async def check_dnc(ctx: ToolContext, phone: str = "", email: str = "") -> Any:
 @registry.tool(
     "discover_cold_call_leads",
     group="growth",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Find new businesses to call, using the app's own discovery. Separate
 from scan_market: this fills the calling list specifically rather than the site-building
 prospect list.""",

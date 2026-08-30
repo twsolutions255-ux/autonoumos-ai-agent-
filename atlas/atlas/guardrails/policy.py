@@ -35,8 +35,14 @@ class Risk(str, Enum):
     """
     #: Nobody outside sees anything. Worst case is a wasted call.
     READ = "read"
-    #: Writes only into Atlas's own memory/plan. Reversible, invisible outside.
+    #: Writes only into ATLAS'S OWN memory and plan. Nothing in the business
+    #: changes. This is the only write class that is safe at 'recommend'.
     INTERNAL = "internal"
+    #: Changes data inside the APP — a prospect, a saved search, a stored
+    #: analysis. Reversible and invisible to anyone outside the company, but it
+    #: is emphatically NOT "Atlas's own memory", and conflating the two is how
+    #: an agent advertised as read-only quietly edits the CRM.
+    APP_WRITE = "app_write"
     #: A human on the team reads something Atlas wrote. Embarrassing if wrong.
     INTERNAL_COMMS = "internal_comms"
     #: Work is queued for a person to release. Nothing leaves the building yet.
@@ -55,6 +61,7 @@ class Risk(str, Enum):
 RISK_REQUIRES = {
     Risk.READ: "observe",
     Risk.INTERNAL: "recommend",
+    Risk.APP_WRITE: "assist",
     Risk.INTERNAL_COMMS: "assist",
     Risk.STAGE: "assist",
     Risk.EXTERNAL_COMMS: "operate",
@@ -62,10 +69,16 @@ RISK_REQUIRES = {
     Risk.IRREVERSIBLE: "autopilot",
 }
 
-#: Risk classes that do nothing at all while SANDBOX is on. Reads and internal
-#: bookkeeping still run — a sandboxed Atlas should still think, plan and
+#: Risk classes that do nothing at all while SANDBOX is on. Reads and Atlas's
+#: own bookkeeping still run — a sandboxed Atlas should still think, plan and
 #: brief, otherwise you cannot evaluate it before trusting it.
-SANDBOX_BLOCKS = {Risk.EXTERNAL_COMMS, Risk.MONEY, Risk.IRREVERSIBLE, Risk.STAGE}
+#:
+#: APP_WRITE is in here deliberately. Sandbox is documented as "Atlas reads,
+#: reasons, plans and briefs, and nothing else happens", and an agent that
+#: edits the CRM while the operator believes it is rehearsing makes that
+#: sentence a lie.
+SANDBOX_BLOCKS = {Risk.APP_WRITE, Risk.STAGE, Risk.EXTERNAL_COMMS,
+                  Risk.MONEY, Risk.IRREVERSIBLE}
 
 
 class Outcome(str, Enum):
@@ -126,6 +139,14 @@ class ToolPolicy:
     estimate_cost: Optional[Callable[[dict], float]] = None
     #: Always ask, whatever the numbers say.
     always_approve: bool = False
+    #: This action REDUCES risk — a brake, a stop, a revocation. It passes every
+    #: gate, including the kill switch and the sandbox.
+    #:
+    #: A brake you have to be senior enough to pull is not a brake, and a stop
+    #: button that is itself disabled by the emergency switch is worse than no
+    #: button. The set of these is deliberately tiny and every member must be
+    #: something you would be glad an agent did by mistake.
+    safety_action: bool = False
 
     def required_level(self) -> str:
         return self.requires or RISK_REQUIRES[self.risk]
@@ -201,6 +222,12 @@ class Policy:
 
     def check(self, tool_name: str, pol: ToolPolicy, args: dict,
               *, approved: bool = False) -> Decision:
+        # 0. Anything that makes the situation safer runs unconditionally.
+        # Checked before the kill switch on purpose: stopping the dialler must
+        # work in exactly the emergency where everything else is switched off.
+        if pol.safety_action:
+            return Decision(Outcome.ALLOW, "safety action — never gated", gate="")
+
         # 1. Kill switch — absolute, and deliberately ahead of everything else.
         if self.kill_switch and pol.risk is not Risk.READ:
             return Decision(

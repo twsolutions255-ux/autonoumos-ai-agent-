@@ -68,8 +68,8 @@ AUTONOMY_LEVELS = ("observe", "recommend", "assist", "operate", "autopilot")
 #: its self-description can never drift from what the code enforces.
 AUTONOMY_DESCRIPTIONS = {
     "observe": "Read everything. Change nothing. Write no messages to anyone.",
-    "recommend": "Read everything, and write a plan and a briefing to the owner. No action on the business.",
-    "assist": "Everything in recommend, plus talk to the team and to the AI employees, and queue work for a human to release.",
+    "recommend": "Read everything, and write a plan and a briefing to the owner. Nothing in the business changes — the only writes are into Atlas's own memory.",
+    "assist": "Everything in recommend, plus change data in the app (scan markets, build, analyse), talk to the team and the AI employees, and queue work for a human to release.",
     "operate": "Everything in assist, plus run the acquisition pipeline end to end: discover, score, build, and send outreach.",
     "autopilot": "Everything in operate, plus money-adjacent and irreversible actions, each still bounded by its own cap.",
 }

@@ -356,3 +356,83 @@ async def test_a_post_carries_both_a_body_and_query_params(h):
     assert out["name"] == "Rival Roofing"
     assert state.competitors == [{"client_id": "c1", "name": "Rival Roofing",
                                   "website": "http://rival.example"}]
+
+
+# ------------------------------------------------- the shipped default
+
+@pytest.mark.asyncio
+async def test_the_shipped_default_really_is_inert():
+    """The README promises that at 'recommend' with sandbox on, Atlas reads,
+    plans and briefs and changes nothing about the business. That promise was
+    false: twelve tools that write to the APP's database were classed as
+    Risk.INTERNAL — documented as 'Atlas's own memory' — so at the shipping
+    default the agent could edit the CRM while the operator believed it was
+    rehearsing. This pins the promise."""
+    import inspect
+    from atlas.tools.registry import registry as reg
+
+    h = Harness(settings_for(ATLAS_AUTONOMY="recommend", ATLAS_SANDBOX="true"))
+    offending = []
+    for name in reg.names():
+        tool = reg.get(name)
+        decision = h.policy.check(name, tool.policy, {})
+        if not decision.allowed:
+            continue
+        src = inspect.getsource(tool.handler)
+        writes = any(v in src for v in ("ctx.client.post", "ctx.client.put",
+                                        "ctx.client.patch", "ctx.client.delete"))
+        # Two justified exceptions to the "a POST is a write" heuristic:
+        #   stop_cold_calling  — the dialler brake, deliberately reachable from
+        #                        every rung and in sandbox. A brake you have to
+        #                        be senior enough to pull is not a brake.
+        #   search_pool_candidates — a POST that only searches. The app saves
+        #                        nothing ("a rep looks at the ranking and picks";
+        #                        server.py:12126), so it changes no state.
+        if writes and name not in ("stop_cold_calling", "search_pool_candidates"):
+            offending.append(name)
+    assert offending == [], (
+        f"at the shipped default these tools can still change the business: {offending}")
+    await h.close()
+
+
+@pytest.mark.asyncio
+async def test_internal_means_atlas_memory_and_nothing_else():
+    """The class the whole safety story rests on. If a tool that writes to the
+    app is ever labelled INTERNAL again, it becomes reachable at 'recommend'
+    and invisible to the sandbox."""
+    import inspect
+    from atlas.guardrails.policy import Risk
+    from atlas.tools.registry import registry as reg
+
+    wrong = []
+    for name in reg.names():
+        tool = reg.get(name)
+        if tool.policy.risk is not Risk.INTERNAL:
+            continue
+        src = inspect.getsource(tool.handler)
+        if any(v in src for v in ("ctx.client.post", "ctx.client.put",
+                                  "ctx.client.patch", "ctx.client.delete")):
+            wrong.append(name)
+    assert wrong == [], f"these write to the app but claim to be Atlas-memory-only: {wrong}"
+
+
+@pytest.mark.asyncio
+async def test_asserting_a_send_needs_the_same_authority_as_sending(h):
+    """The app has no send path, so this tool cannot observe a send — only
+    assert one, permanently, dropping the prospect out of every list."""
+    h.policy.set_autonomy("assist")
+    out = await h.call("record_outreach_sent", {"prospect_id": "p1", "channel": "email"})
+    assert "NOT DONE" in out
+
+    h.policy.set_autonomy("operate")
+    out = await h.call("record_outreach_sent", {"prospect_id": "p1", "channel": "email"})
+    assert "Logged" in out
+
+
+@pytest.mark.asyncio
+async def test_the_dialler_brake_works_from_the_lowest_rung(h):
+    """Stopping is always allowed — including in sandbox, at 'observe'."""
+    h.policy.set_autonomy("observe")
+    h.policy.sandbox = True
+    out = await h.call("stop_cold_calling")
+    assert out["stopped"] is True

@@ -28,7 +28,7 @@ log = logging.getLogger("atlas.tools.clientcare")
 @registry.tool(
     "analyze_client_website",
     group="clients",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Fetch a client's REAL website and audit the concrete things that cost
 them conversions, then turn the failures into a prioritised list.
 Every check is verified against the actual HTML — nothing is assumed — which is what
@@ -48,7 +48,7 @@ async def analyze_client_website(ctx: ToolContext, client_id: str) -> Any:
 @registry.tool(
     "analyze_client_competitors",
     group="clients",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Scan a client's competitors and say where they are losing.
 The app refuses this if no competitors have been added for that client yet — add them
 first with add_client_competitor. That refusal is correct: an analysis with nothing to
@@ -81,7 +81,7 @@ async def get_client_competitors(ctx: ToolContext, client_id: str) -> Any:
 @registry.tool(
     "add_client_competitor",
     group="clients",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Put a competitor on file for a client so the scan has something real to
 compare against. Add the businesses that actually take their calls — the local ones
 ranking above them — not national chains.""",
@@ -104,7 +104,7 @@ async def add_client_competitor(ctx: ToolContext, client_id: str, name: str,
 @registry.tool(
     "analyze_client_marketing",
     group="clients",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Assess a client's marketing position against their own live numbers and
 produce recommendations. Useful ammunition for an upsell conversation, and for spotting
 a client whose problem is demand rather than call handling.""",
@@ -121,7 +121,7 @@ async def analyze_client_marketing(ctx: ToolContext, client_id: str) -> Any:
 @registry.tool(
     "seo_review",
     group="clients",
-    risk=Risk.INTERNAL,
+    risk=Risk.APP_WRITE,
     description="""Read a client's live site and say what is costing them local search.
 Analysis only — it changes nothing by design. This is a Scale-tier feature, so running it
 for a Foundation client is also a concrete, specific reason for them to upgrade.""",
