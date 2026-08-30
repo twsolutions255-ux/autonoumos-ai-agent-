@@ -129,8 +129,13 @@ class Runtime:
         self._spend_day = today
         rows = await self.store["cycles"].find(
             {"day": today}, {"_id": 0, "usage": 1}).to_list(500)
-        self._spend_today = sum(float((r.get("usage") or {}).get("cost_usd") or 0)
-                                for r in rows)
+        spent = sum(float((r.get("usage") or {}).get("cost_usd") or 0) for r in rows)
+        # Chat costs money too, and it is not a cycle. Leaving it out would let
+        # a redeploy hand Atlas a fresh budget it had already spent talking.
+        chats = await self.store["chat"].find(
+            {"created_at": {"$gte": today}}, {"_id": 0, "usage": 1}).to_list(500)
+        spent += sum(float((r.get("usage") or {}).get("cost_usd") or 0) for r in chats)
+        self._spend_today = spent
 
     def _roll_day(self) -> None:
         today = now().date().isoformat()
@@ -363,22 +368,50 @@ class Runtime:
         """Which cycle is owed right now.
 
         Morning and evening are once-a-day events; everything else is a work
-        tick. Comparing on the date string means a restart cannot cause the
-        morning plan to run twice.
+        tick. Two things this has to get right, both learned the hard way:
+
+        * **Morning is a window, not a threshold.** An unbounded `hour >=
+          morning_hour` means a process that starts at 22:00 writes a "morning
+          plan" for a day that is over, and then never runs the evening review
+          because morning matched first.
+        * **The "already ran today" marks must survive a restart.** Held only
+          in memory, every redeploy re-runs the morning plan and re-briefs the
+          owner. They are therefore read back from the cycle history at boot
+          (see `_last_cycle_days`), not just tracked in the loop.
         """
         n = now()
         today = n.date().isoformat()
-        if n.hour >= self.settings.morning_brief_hour and last_morning != today:
+        morning_h = self.settings.morning_brief_hour
+        evening_h = self.settings.evening_brief_hour
+        if morning_h <= n.hour < evening_h and last_morning != today:
             return "morning"
-        if n.hour >= self.settings.evening_brief_hour and last_evening != today:
+        if n.hour >= evening_h and last_evening != today:
             return "evening"
         return "work"
+
+    async def _last_cycle_days(self) -> tuple:
+        """The days the last morning and evening cycles actually ran.
+
+        Read from storage so a restart does not repeat either of them.
+        """
+        if not self.store:
+            return "", ""
+        out = []
+        for kind in ("morning", "evening"):
+            row = await self.store["cycles"].find_one(
+                {"kind": kind, "status": "done"}, {"_id": 0, "day": 1},
+                sort=[("started_at", -1)])
+            out.append((row or {}).get("day") or "")
+        return tuple(out)
 
     async def serve_forever(self) -> None:
         """Drive cycles on a timer until told to stop."""
         self._running = True
-        last_morning = last_evening = ""
-        log.info("atlas: scheduler running, tick every %ss", self.settings.tick_seconds)
+        last_morning, last_evening = await self._last_cycle_days()
+        log.info("atlas: scheduler running, tick every %ss "
+                 "(last morning: %s, last evening: %s)",
+                 self.settings.tick_seconds, last_morning or "never",
+                 last_evening or "never")
         while self._running:
             try:
                 if self.policy.kill_switch:

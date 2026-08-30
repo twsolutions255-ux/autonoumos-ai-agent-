@@ -293,3 +293,76 @@ async def test_the_job_driver_actually_drives_when_permitted():
     assert "speed-to-lead/drain" in state.jobs_run[0]
     assert "workflows/run" in state.jobs_run[1]
     await rt.close()
+
+
+# ---------------------------------------------------------------- scheduling
+
+@pytest.mark.asyncio
+async def test_a_restart_in_the_evening_does_not_write_a_morning_plan():
+    """The bug this pins: `hour >= morning_hour` with in-memory state means any
+    redeploy after 7am produces a 'morning plan' — at 10pm, for a day that is
+    over — and then never runs the evening review, because morning matched
+    first."""
+    rt = await build_runtime(ATLAS_MORNING_HOUR=7, ATLAS_EVENING_HOUR=19)
+
+    class At:
+        def __init__(self, hour): self.hour = hour
+        def date(self): return self
+        def isoformat(self): return "2026-08-30"
+
+    import atlas.brain.loop as loop
+    real_now = loop.now
+    try:
+        for hour, expected in [
+            (6, "work"),        # before the morning window
+            (7, "morning"),     # window opens
+            (12, "morning"),    # still owed
+            (19, "evening"),    # morning window closed; evening owed
+            (22, "evening"),    # still owed
+        ]:
+            loop.now = lambda h=hour: At(h)
+            assert rt._due_kind("", "") == expected, f"at {hour}:00 wanted {expected}"
+
+        # Already done today -> plain work ticks, at any hour.
+        loop.now = lambda: At(20)
+        assert rt._due_kind("2026-08-30", "2026-08-30") == "work"
+        loop.now = lambda: At(9)
+        assert rt._due_kind("2026-08-30", "") == "work"
+    finally:
+        loop.now = real_now
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_the_scheduler_reads_back_what_already_ran_today():
+    """Held only in memory, every redeploy re-briefs the owner."""
+    rt = await build_runtime()
+    assert await rt._last_cycle_days() == ("", "")
+
+    install(rt.engine, [SimpleNamespace(content=[text_block("morning done")],
+                                        stop_reason="end_turn", usage=usage())])
+    rec = await rt.run_cycle("morning")
+    assert rec["status"] == "done"
+
+    last_morning, last_evening = await rt._last_cycle_days()
+    assert last_morning == rec["day"]
+    assert last_evening == ""
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_survives_a_restart_including_what_chat_cost():
+    rt = await build_runtime(ATLAS_DAILY_LLM_BUDGET_USD=10)
+    install(rt.engine, [SimpleNamespace(content=[text_block("hi")],
+                                        stop_reason="end_turn", usage=usage())])
+    await rt.run_cycle("work")
+
+    from atlas.db import iso
+    await rt.store["chat"].insert_one({
+        "id": "c1", "role": "assistant", "text": "hello",
+        "created_at": iso(), "usage": {"cost_usd": 3.25}})
+
+    rt._spend_today = 0.0
+    await rt._load_spend()
+    assert rt._spend_today >= 3.25, "a redeploy handed back a budget already spent"
+    await rt.close()
