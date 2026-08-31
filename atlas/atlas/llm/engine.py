@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from .deepseek import DeepSeekClient
+
 log = logging.getLogger("atlas.llm")
 
 #: Per-million-token pricing, used only for budget accounting and the console.
@@ -39,7 +41,16 @@ PRICING = {
     "claude-opus-5": (5.0, 25.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # Roughly two orders of magnitude cheaper, which is the whole reason Atlas
+    # can run hourly at all. Peak rates: DeepSeek bills at half outside peak,
+    # so this over-reserves at worst -- the right direction for a budget guard.
+    "deepseek-v4-flash": (0.28, 0.42),
+    "deepseek-v4-pro": (0.55, 2.19),
 }
+
+
+def is_deepseek(model: str) -> bool:
+    return (model or "").startswith("deepseek")
 
 
 @dataclass
@@ -109,19 +120,47 @@ class Engine:
 
     def __init__(self, settings, *, dispatch: Callable[[str, dict], Awaitable[Any]],
                  spend_today: Callable[[], float] = lambda: 0.0):
-        if not settings.anthropic_api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Atlas cannot reason without it and "
-                "refuses to start a cycle that would silently do nothing.")
-        import anthropic
-        self._anthropic = anthropic
+        # WHICHEVER VENDOR THE CONFIGURED MODEL BELONGS TO.
+        #
+        # Both models are declared -- model and fast_model -- and either may be
+        # DeepSeek, so a deployment running DeepSeek for the main loop and
+        # Claude for one-shot asks needs both clients. Each is built only when
+        # its key exists, and the check names the model that asked for it: a
+        # deployment refusing to start should say which setting to fix.
         self.settings = settings
-        self.client = anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key,
-            # A tool-heavy turn is long. The SDK default is 10 minutes; the
-            # loop's own iteration cap is the real bound.
-            timeout=600.0, max_retries=3,
-        )
+        self._anthropic = None
+        self.client = None
+        self.deepseek = None
+
+        wants = {settings.model, settings.fast_model}
+        needs_anthropic = any(not is_deepseek(m) for m in wants)
+        needs_deepseek = any(is_deepseek(m) for m in wants)
+
+        if needs_anthropic:
+            if not settings.anthropic_api_key:
+                raise RuntimeError(
+                    "ANTHROPIC_API_KEY is not set, and %s is a Claude model. "
+                    "Set the key, or set ATLAS_MODEL and ATLAS_FAST_MODEL to "
+                    "DeepSeek models."
+                    % ", ".join(sorted(m for m in wants if not is_deepseek(m))))
+            import anthropic
+            self._anthropic = anthropic
+            self.client = anthropic.AsyncAnthropic(
+                api_key=settings.anthropic_api_key,
+                # A tool-heavy turn is long. The SDK default is 10 minutes; the
+                # loop's own iteration cap is the real bound.
+                timeout=600.0, max_retries=3,
+            )
+
+        if needs_deepseek:
+            key = getattr(settings, "deepseek_api_key", "") or ""
+            if not key:
+                raise RuntimeError(
+                    "DEEPSEEK_API_KEY is not set, and %s is a DeepSeek model. "
+                    "Atlas refuses to start a cycle that would silently do "
+                    "nothing."
+                    % ", ".join(sorted(m for m in wants if is_deepseek(m))))
+            self.deepseek = DeepSeekClient(key)
         self._dispatch = dispatch
         self._spend_today = spend_today
 
@@ -194,7 +233,17 @@ class Engine:
 
     async def _call(self, system: str, convo: list, tools: list,
                     model: str, effort: str):
-        """One request. Streamed, because turns here are long by design."""
+        """One request. Streamed for Claude, because turns here are long.
+
+        DeepSeek is answered through an adapter that returns the same block
+        shapes, so everything above this line is vendor-agnostic. Effort has no
+        DeepSeek equivalent and is not faked -- model choice carries it there.
+        """
+        if is_deepseek(model):
+            return await self.deepseek.call(
+                system=system, convo=convo, tools=tools, model=model,
+                max_tokens=self.settings.max_tokens)
+
         kwargs: dict[str, Any] = {
             "model": model,
             "max_tokens": self.settings.max_tokens,

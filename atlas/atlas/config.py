@@ -102,6 +102,10 @@ class Settings:
 
     # ---------- reasoning ----------
     anthropic_api_key: str = ""
+    #: Set when ATLAS_MODEL or ATLAS_FAST_MODEL is a DeepSeek model. Roughly
+    #: two orders of magnitude cheaper than Claude, which is what makes an
+    #: hourly agent affordable at all.
+    deepseek_api_key: str = ""
     model: str = "claude-opus-5"
     #: Cheap model for high-volume mechanical calls (scoring one lead, drafting
     #: one line). The expensive model plans; this one grinds.
@@ -160,7 +164,19 @@ class Settings:
     # -- capability probes: each answers "is this actually wired up?" --
     @property
     def can_reason(self) -> bool:
-        return bool(self.anthropic_api_key)
+        """Whether the models Atlas is CONFIGURED to use have keys.
+
+        Checked against the configured models rather than against Anthropic
+        alone. A DeepSeek deployment with no ANTHROPIC_API_KEY reasons
+        perfectly well, and reporting it as unable to think would be the same
+        misleading-red as a green light on a broken integration.
+        """
+        models = {self.model, self.fast_model}
+        if any(str(m).startswith("deepseek") for m in models) and not self.deepseek_api_key:
+            return False
+        if any(not str(m).startswith("deepseek") for m in models) and not self.anthropic_api_key:
+            return False
+        return True
 
     @property
     def can_reach_app(self) -> bool:
@@ -235,6 +251,7 @@ def load() -> Settings:
         tws_cron_secret=_env("TWS_CRON_SECRET") or _env("INTERNAL_CRON_SECRET"),
 
         anthropic_api_key=_env("ANTHROPIC_API_KEY"),
+        deepseek_api_key=_env("DEEPSEEK_API_KEY"),
         model=_env("ATLAS_MODEL", "claude-opus-5"),
         fast_model=_env("ATLAS_FAST_MODEL", "claude-haiku-4-5"),
         effort=effort,
