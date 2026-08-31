@@ -168,6 +168,28 @@ async def set_plan(ctx: ToolContext, north_star: str, objectives: list,
     "brief_owner",
     group="self",
     risk=Risk.INTERNAL_COMMS,
+    # LOWERED TO 'recommend' ON PURPOSE, and this is a bug fix, not a loosening.
+    #
+    # INTERNAL_COMMS normally requires 'assist'. But the description of the
+    # 'recommend' rung -- quoted verbatim into Atlas's own system prompt -- says
+    # "Read everything, and write a plan and a briefing to the owner". The
+    # morning and evening cycle instructions then tell Atlas to finish by
+    # calling brief_owner. And the gate refused it, because the rung it needed
+    # was one higher than the rung that promised it.
+    #
+    # So Atlas was told to brief the owner twice a day, tried, and was denied
+    # every time. The owner's Briefings tab has been empty since the day it
+    # shipped, and nothing surfaced that -- a policy denial is returned to the
+    # model as a readable refusal, not raised as an error.
+    #
+    # Lowering the requirement rather than raising the rung is the narrow fix.
+    # Raising autonomy to 'assist' to get briefings would also unlock
+    # post_to_channel, announce, direct_message, ask_ai_employee and
+    # wake_ai_employees -- five tools that write to the TEAM. This one writes
+    # into Atlas's own briefs collection, which only the owner reads. Same risk
+    # class, entirely different blast radius, and the rung description already
+    # committed to it.
+    requires="recommend",
     description="""Write a briefing to the owner — the morning plan, the evening summary,
 or something that cannot wait.
 Lead with what changed and what you did about it. Give real numbers. Say plainly what
