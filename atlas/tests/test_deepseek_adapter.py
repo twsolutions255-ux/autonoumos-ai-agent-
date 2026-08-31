@@ -213,3 +213,61 @@ def test_the_vendor_is_decided_by_the_model_name():
     assert is_deepseek("deepseek-v4-pro")
     assert not is_deepseek("claude-opus-5")
     assert not is_deepseek("")
+
+
+# ------------------------------------------------- the hint people act on
+
+def _settings(**kw):
+    from atlas.config import Settings
+    base = dict(model="deepseek-v4-flash", fast_model="deepseek-v4-flash",
+                anthropic_api_key="", deepseek_api_key="")
+    base.update(kw)
+    return Settings(**base)
+
+
+def test_the_missing_key_hint_names_the_key_that_is_actually_missing():
+    """can_reason was made vendor-aware and this hint was left hard-coded to
+    ANTHROPIC_API_KEY, so a DeepSeek deployment with no DeepSeek key logged
+
+        reasoning is OFF -- Atlas cannot think (set ANTHROPIC_API_KEY)
+
+    naming a variable that would not have fixed it. The check was right and the
+    instruction was wrong, and the instruction is the half a person acts on.
+    """
+    s = _settings()
+    assert s.can_reason is False
+    assert "DEEPSEEK_API_KEY" in s.reasoning_key_needed
+    assert "ANTHROPIC" not in s.reasoning_key_needed, \
+        "it named a key that would not have fixed anything"
+
+
+def test_a_claude_deployment_is_still_told_about_anthropic():
+    s = _settings(model="claude-opus-5", fast_model="claude-haiku-4-5")
+    assert s.can_reason is False
+    assert "ANTHROPIC_API_KEY" in s.reasoning_key_needed
+    assert "DEEPSEEK" not in s.reasoning_key_needed
+
+
+def test_a_mixed_deployment_names_both():
+    s = _settings(model="deepseek-v4-flash", fast_model="claude-haiku-4-5")
+    assert "DEEPSEEK_API_KEY" in s.reasoning_key_needed
+    assert "ANTHROPIC_API_KEY" in s.reasoning_key_needed
+
+
+def test_a_deepseek_deployment_with_its_key_can_reason():
+    """The regression that took Atlas down: reasoning reported OFF because the
+    check only knew about Anthropic."""
+    s = _settings(deepseek_api_key="k")
+    assert s.can_reason is True
+    assert "API_KEY" not in s.reasoning_key_needed, \
+        "a working deployment should name the models, not a missing key"
+
+
+def test_readiness_reports_the_same_thing_as_can_reason():
+    """/health and the log line must not disagree about whether it can think."""
+    for kw, ok in ((dict(), False), (dict(deepseek_api_key="k"), True)):
+        s = _settings(**kw)
+        checks = {c["name"]: c for c in s.readiness()["checks"]}
+        assert checks["reasoning"]["ok"] is ok
+        if not ok:
+            assert "DEEPSEEK_API_KEY" in checks["reasoning"]["set"]

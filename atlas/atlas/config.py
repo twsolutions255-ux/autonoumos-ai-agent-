@@ -179,6 +179,28 @@ class Settings:
         return True
 
     @property
+    def reasoning_key_needed(self) -> str:
+        """WHICH key is missing, not which key used to be the only option.
+
+        can_reason was made vendor-aware and this hint was left hard-coded to
+        ANTHROPIC_API_KEY, so a DeepSeek deployment with no DeepSeek key logged
+        "reasoning is OFF (set ANTHROPIC_API_KEY)" -- naming a variable that
+        would not have fixed it. The check was right and the instruction was
+        wrong, and the instruction is the half a person acts on.
+        """
+        models = {self.model, self.fast_model}
+        missing = []
+        if any(str(m).startswith("deepseek") for m in models) and not self.deepseek_api_key:
+            missing.append("DEEPSEEK_API_KEY")
+        if any(not str(m).startswith("deepseek") for m in models) and not self.anthropic_api_key:
+            missing.append("ANTHROPIC_API_KEY")
+        if not missing:
+            # Nothing is missing. Name what is in use, so a green line still
+            # says which vendor is answering.
+            return " + ".join(sorted(models))
+        return " and ".join(missing) + " (for %s)" % ", ".join(sorted(models))
+
+    @property
     def can_reach_app(self) -> bool:
         return bool(self.tws_api_url and (self.tws_token or (self.tws_email and self.tws_password)))
 
@@ -208,7 +230,7 @@ class Settings:
         failing separately at 3am.
         """
         checks = [
-            ("reasoning", self.can_reason, "ANTHROPIC_API_KEY",
+            ("reasoning", self.can_reason, self.reasoning_key_needed,
              "Atlas cannot think. Every cycle will no-op."),
             ("app_access", self.can_reach_app, "TWS_API_URL + TWS_EMAIL/TWS_PASSWORD (or TWS_TOKEN)",
              "Atlas cannot see or touch the business. It will run blind."),
