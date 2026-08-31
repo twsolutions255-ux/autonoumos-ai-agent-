@@ -49,18 +49,33 @@ READ THE VERDICT FIELD CAREFULLY, IT HAS THREE STATES AND THE MIDDLE ONE MATTERS
                 dialling the number, and saying so plainly is the useful output.
   failing       something is actually broken; each step carries the fix
 
-Run this for every client whose receptionist is meant to be live. It is the one check
-that distinguishes 'configured' from 'working', and those look identical everywhere
-else in the app.""",
+CALL IT WITH NO client_id AND IT CHECKS EVERY CLIENT AT ONCE. Prefer that. One
+client checked is a sample, not a report, and the question worth answering is "which
+of these receptionists actually work". The roll-up returns them worst first with
+counts, and each row carries the failing step names. Drill into a single client only
+once the roll-up shows you which one to look at.
+
+It is the one check that distinguishes 'configured' from 'working', and those look
+identical everywhere else in the app.""",
     schema={
         "type": "object",
-        "properties": {"client_id": {"type": "string"}},
-        "required": ["client_id"],
+        "properties": {
+            "client_id": {
+                "type": "string",
+                "description": "Omit to check every client, which is usually what "
+                               "you want. Pass one id to see all nine steps for "
+                               "that client in detail.",
+            },
+        },
+        "required": [],
         "additionalProperties": False,
     },
 )
-async def check_receptionist_end_to_end(ctx: ToolContext, client_id: str) -> Any:
-    return await ctx.client.get("/admin/receptionist/end-to-end", client_id=client_id)
+async def check_receptionist_end_to_end(ctx: ToolContext, client_id: str = "") -> Any:
+    if client_id:
+        return await ctx.client.get("/admin/receptionist/end-to-end",
+                                    client_id=client_id)
+    return await ctx.client.get("/admin/receptionist/end-to-end")
 
 
 @registry.tool(

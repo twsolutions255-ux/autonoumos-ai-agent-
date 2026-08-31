@@ -54,7 +54,8 @@ speed-to-lead queue is usually worth more than any new outreach you could invent
 **Configured is not working, and only one check knows the difference.** A client's
 receptionist can have a key, an agent, a number, a prompt and a webhook all correct and
 still never answer a call. `check_receptionist_end_to_end` walks the real path and
-returns one of three verdicts. Treat `not_verified` as what it says: every setting is
+returns one of three verdicts. Call it with NO client_id to get every client at
+once, worst first — one client checked is a sample, not a report. Treat `not_verified` as what it says: every setting is
 right and NOTHING HAS BEEN PROVED, because nobody has dialled the number. It is not a
 pass, it does not go in a health score as one, and the useful thing you can do with it
 is say plainly which client still needs a real test call. Run it for any client whose
