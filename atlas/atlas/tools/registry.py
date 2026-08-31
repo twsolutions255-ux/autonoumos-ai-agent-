@@ -31,6 +31,50 @@ from ..guardrails.policy import Decision, Outcome, Policy, Risk, ToolPolicy
 log = logging.getLogger("atlas.tools")
 
 
+def _strictify(schema: dict) -> dict:
+    """An object schema the API will accept under strict mode, all the way down.
+
+    THIS USED TO SET additionalProperties ON THE TOP LEVEL ONLY, and that is
+    why Atlas ran for over an hour without completing a single cycle. One tool
+    -- snapshot_metrics -- had a NESTED object, and strict mode requires every
+    object in the tree to forbid extra properties:
+
+        tools.45.custom: For 'object' type, 'additionalProperties: object'
+        is not supported. Please set 'additionalProperties' to false
+
+    A malformed tool rejects the WHOLE request, so all forty-five went down
+    together and every cycle died in the same place. /health went on saying
+    ok: true, because the process was alive and only the work was failing.
+
+    The shape of the original bug is worth keeping in mind: a normaliser was
+    written, it looked like it covered the problem, and it covered exactly one
+    level of it.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    out = dict(schema)
+
+    if out.get("type") == "object" or "properties" in out:
+        out.setdefault("type", "object")
+        props = out.get("properties") or {}
+        out["properties"] = {k: _strictify(v) for k, v in props.items()}
+        out.setdefault("required", [])
+        # Always false, never a schema. A map of unknown keys cannot be
+        # expressed under strict mode at all -- express it as an array of
+        # name/value pairs instead, which is what snapshot_metrics now does.
+        out["additionalProperties"] = False
+
+    if out.get("type") == "array" and isinstance(out.get("items"), dict):
+        out["items"] = _strictify(out["items"])
+
+    # anyOf/oneOf/allOf branches are objects in their own right.
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(key), list):
+            out[key] = [_strictify(x) for x in out[key]]
+
+    return out
+
+
 @dataclass
 class Tool:
     name: str
@@ -48,11 +92,7 @@ class Tool:
         extra field silently ignored is a worse outcome than a validation
         error the model can see and correct.
         """
-        schema = dict(self.input_schema)
-        schema.setdefault("type", "object")
-        schema.setdefault("properties", {})
-        schema.setdefault("required", [])
-        schema["additionalProperties"] = False
+        schema = _strictify(self.input_schema)
         return {
             "name": self.name,
             "description": self.description.strip(),

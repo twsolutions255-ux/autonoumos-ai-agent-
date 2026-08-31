@@ -234,19 +234,46 @@ snapshot. A single number means almost nothing; the direction means almost every
     schema={
         "type": "object",
         "properties": {
+            # A free-form name -> number MAP cannot be expressed under strict
+            # mode: every object has to forbid extra properties, which leaves a
+            # map that accepts no keys. Pairs say the same thing and validate.
+            # This tool was the one rejected tool that took every cycle down.
             "metrics": {
-                "type": "object",
-                "description": "Flat name → number map, e.g. {\"clients\": 12, \"demos_booked_7d\": 9}.",
-                "additionalProperties": {"type": "number"},
+                "type": "array",
+                "description": ("The numbers worth remembering, as name/value "
+                                "pairs. e.g. [{\"name\": \"clients\", \"value\": 12}, "
+                                "{\"name\": \"demos_booked_7d\", \"value\": 9}]"),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "value": {"type": "number"},
+                    },
+                    "required": ["name", "value"],
+                },
             },
             "note": {"type": "string"},
         },
         "required": ["metrics"],
     },
 )
-async def snapshot_metrics(ctx: ToolContext, metrics: dict, note: str = "") -> str:
+async def snapshot_metrics(ctx: ToolContext, metrics: list, note: str = "") -> str:
+    # Stored as a map, as it always was -- only the wire format changed, so
+    # metric_history and everything reading db.metrics is untouched.
+    #
+    # A dict is still accepted. Cycles recorded before this change may be
+    # replayed, and an agent that has seen the old shape in its own memory may
+    # reproduce it; refusing that would turn a cosmetic mismatch into a failed
+    # cycle, which is the failure this whole fix exists to stop.
     clean = {}
-    for k, v in (metrics or {}).items():
+    pairs = []
+    if isinstance(metrics, dict):
+        pairs = list(metrics.items())
+    else:
+        for item in (metrics or []):
+            if isinstance(item, dict) and "name" in item:
+                pairs.append((item.get("name"), item.get("value")))
+    for k, v in pairs:
         try:
             clean[str(k)[:60]] = float(v)
         except (TypeError, ValueError):
