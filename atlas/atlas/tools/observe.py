@@ -130,15 +130,36 @@ async def get_clients(ctx: ToolContext) -> Any:
     risk=Risk.READ,
     description="""One client's full performance report: calls handled, appointments
 booked and revenue recovered. This is the evidence for a renewal conversation, an
-upsell, or catching a client who is quietly getting no value.""",
+upsell, or catching a client who is quietly getting no value.
+
+Defaults to the current month. Pass month as YYYY-MM for a historical one.""",
     schema={
         "type": "object",
-        "properties": {"client_id": {"type": "string"}},
+        "properties": {
+            "client_id": {"type": "string"},
+            "month": {"type": "string",
+                      "description": "YYYY-MM, e.g. 2026-07. Omit for this month."},
+        },
         "required": ["client_id"],
+        "additionalProperties": False,
     },
 )
-async def get_client_report(ctx: ToolContext, client_id: str) -> Any:
-    return await ctx.client.get(f"/admin/clients/{client_id}/report")
+async def get_client_report(ctx: ToolContext, client_id: str, month: str = "") -> Any:
+    """A historical month is now reachable, which it was not before.
+
+    This tool used to declare only client_id and send no query parameters, while
+    the endpoint required `month`. So every call it ever made returned 422 --
+    unconditionally, from the day it was written.
+
+    The endpoint now defaults the month, which is the actual fix and the one
+    that also repaired client_value_report. Declaring `month` here as well is
+    the smaller half: without it the parameter is unreachable, because _invoke
+    drops any argument a handler does not declare. That is what made the old
+    failure unrecoverable -- a model could read the 422, understand it, send
+    `month`, and have the argument deleted before the request was built.
+    """
+    return await ctx.client.get(f"/admin/clients/{client_id}/report",
+                                month=month or None)
 
 
 @registry.tool(

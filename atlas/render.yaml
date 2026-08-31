@@ -32,7 +32,32 @@ services:
         value: recommend
       - key: ATLAS_SANDBOX
         value: "true"
+      # Money. DeepSeek, not Claude: an hour of Opus at high effort cost about
+      # ten dollars on the first day this ran, which is not survivable for a
+      # company with no revenue yet. Pro for the planner because cycles are
+      # input-dominated (the 83 tool specs dominate the prompt), so pro costs
+      # roughly 2x flash in practice rather than the 5x its output rate
+      # suggests -- and the reasoning is worth it.
+      - key: ATLAS_MODEL
+        value: deepseek-v4-pro
+      - key: ATLAS_FAST_MODEL
+        value: deepseek-v4-flash
+      # The real cost driver is iterations per cycle, not how often cycles run:
+      # every iteration re-sends the whole conversation, so cost grows with the
+      # SQUARE of the cap. Observed cycles finish in well under 24.
+      - key: ATLAS_MAX_TOOL_ITERATIONS
+        value: "24"
+      # A real cap, not a ceiling nobody reaches. At hourly cycles on pro this
+      # is several times the expected spend, so it stops a runaway without
+      # stopping ordinary work.
+      #
+      # IT IS CHECKED AGAINST THE DAY'S SPEND READ BACK FROM THE DATABASE, so
+      # lowering it below what has already been spent today stops Atlas until
+      # midnight -- and it fails SILENTLY, because BudgetExceeded closes the
+      # cycle without an error log. Change it in the morning, not the evening.
       - key: ATLAS_DAILY_LLM_BUDGET_USD
-        value: "25"
+        value: "6"
+      # Hourly. Was 900 here while the deployed service ran 3600, and the file
+      # nobody reads is the one that wins on the next blueprint sync.
       - key: ATLAS_TICK_SECONDS
-        value: "900"
+        value: "3600"
