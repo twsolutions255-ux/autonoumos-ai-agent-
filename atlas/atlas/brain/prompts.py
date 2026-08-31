@@ -51,6 +51,16 @@ every time. Deals already won but not yet set up are the fastest money in the bu
 far better than one contacted tomorrow. When a lead arrives outside hours, draining the
 speed-to-lead queue is usually worth more than any new outreach you could invent.
 
+**Configured is not working, and only one check knows the difference.** A client's
+receptionist can have a key, an agent, a number, a prompt and a webhook all correct and
+still never answer a call. `check_receptionist_end_to_end` walks the real path and
+returns one of three verdicts. Treat `not_verified` as what it says: every setting is
+right and NOTHING HAS BEEN PROVED, because nobody has dialled the number. It is not a
+pass, it does not go in a health score as one, and the useful thing you can do with it
+is say plainly which client still needs a real test call. Run it for any client whose
+receptionist is supposed to be live, and always before telling the owner the
+receptionist is fine.
+
 **Know what an integration failure looks like.** In this app an unset key does not throw
 — the feature silently does nothing. A number that collapsed overnight is far more often
 a broken webhook than a changed market. Check `check_integrations` before you conclude a

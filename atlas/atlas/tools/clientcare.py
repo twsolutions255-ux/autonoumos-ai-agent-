@@ -26,6 +26,44 @@ log = logging.getLogger("atlas.tools.clientcare")
 
 
 @registry.tool(
+    "check_receptionist_end_to_end",
+    group="clients",
+    risk=Risk.READ,
+    description="""Walk the whole path a customer takes to reach a client's AI
+receptionist, and report each of the nine steps separately: the Retell key proved by
+using it, the agent, the phone number's inbound binding, the webhook URL, the live
+prompt, the recording disclosure Retell actually speaks, rejected call reports, Telnyx
+for the follow-up text, and whether a real call has ever arrived with a transcript.
+
+Every step asks Retell or Telnyx directly rather than reading the app's own settings
+back, so a setting saved in the CRM that never reached the provider shows as a failure
+rather than a tick.
+
+READ THE VERDICT FIELD CAREFULLY, IT HAS THREE STATES AND THE MIDDLE ONE MATTERS MOST:
+
+  pass          a real call came through and everything worked
+  not_verified  every setting is right AND NOTHING HAS BEEN PROVED, because nobody
+                has rung the number. This is NOT a pass. Do not report it as one,
+                do not average it into a health score, and do not describe the
+                receptionist as working. The only thing that clears it is a human
+                dialling the number, and saying so plainly is the useful output.
+  failing       something is actually broken; each step carries the fix
+
+Run this for every client whose receptionist is meant to be live. It is the one check
+that distinguishes 'configured' from 'working', and those look identical everywhere
+else in the app.""",
+    schema={
+        "type": "object",
+        "properties": {"client_id": {"type": "string"}},
+        "required": ["client_id"],
+        "additionalProperties": False,
+    },
+)
+async def check_receptionist_end_to_end(ctx: ToolContext, client_id: str) -> Any:
+    return await ctx.client.get("/admin/receptionist/end-to-end", client_id=client_id)
+
+
+@registry.tool(
     "analyze_client_website",
     group="clients",
     risk=Risk.APP_WRITE,
