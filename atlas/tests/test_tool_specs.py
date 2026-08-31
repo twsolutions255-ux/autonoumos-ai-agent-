@@ -33,7 +33,7 @@ import pytest
 # Importing the registry alone leaves it empty -- the tool modules are what
 # populate it, through their decorators. Same import the brain loop does.
 from atlas.tools import clientcare, comms, growth, money, observe, reflect  # noqa: F401
-from atlas.tools.registry import registry, _strictify
+from atlas.tools.registry import registry, _strictify, MAX_STRICT_TOOLS
 
 
 def all_specs():
@@ -114,6 +114,63 @@ def test_snapshot_metrics_takes_pairs_not_a_map():
     item = metrics["items"]
     assert set(item["properties"]) == {"name", "value"}
     assert item["additionalProperties"] is False
+
+
+# ------------------------------------------------------------ the strict cap
+
+def test_strict_tools_stay_under_the_api_limit():
+    """The second wall, hit the moment the first was cleared.
+
+        400 - Too many strict tools (48). The maximum number of strict tools
+        supported is 20.
+
+    Every tool was strict. The API allows twenty. This is a hard external
+    limit, so exceeding it does not degrade -- it takes the whole agent down
+    again, in exactly the way that looked healthy for 75 minutes.
+
+    Counted across EVERY tool, not the subset offered at today's autonomy: at
+    full autonomy all of them are sent at once, and a limit that only holds
+    while Atlas is timid is not a limit.
+    """
+    strict = [s["name"] for s in all_specs() if s.get("strict")]
+    assert len(strict) <= MAX_STRICT_TOOLS, (
+        "%d strict tools, API allows %d. Either widen STRICT_RISKS's exclusions "
+        "or accept the schema-only guarantee for a class.\n%s"
+        % (len(strict), MAX_STRICT_TOOLS, ", ".join(sorted(strict))))
+
+
+def test_the_tools_that_reach_outside_are_strict():
+    """The cap is met by dropping the cheap classes, not the consequential
+    ones. If a future trim starts here, this fails first."""
+    from atlas.guardrails.policy import Risk
+
+    for name in registry.names():
+        tool = registry.get(name)
+        if tool.policy.risk in (Risk.MONEY, Risk.EXTERNAL_COMMS, Risk.IRREVERSIBLE):
+            assert tool.spec()["strict"], (
+                "%s is %s and must stay strict -- it is the case the whole "
+                "argument for strict was written about"
+                % (name, tool.policy.risk.value))
+
+
+def test_reads_are_not_spending_a_strict_slot():
+    from atlas.guardrails.policy import Risk
+
+    for name in registry.names():
+        tool = registry.get(name)
+        if tool.policy.risk is Risk.READ:
+            assert not tool.spec()["strict"], \
+                "%s is a read and should not hold one of the twenty slots" % name
+
+
+def test_every_tool_still_forbids_extra_fields_strict_or_not():
+    """Dropping strict must not quietly drop the schema guarantee with it.
+    additionalProperties is what actually describes the contract; strict only
+    decides who enforces it."""
+    for spec in all_specs():
+        for path, node in walk_objects(spec["input_schema"], spec["name"]):
+            assert node.get("additionalProperties") is False, \
+                "%s went loose when strict was dropped" % path
 
 
 # ---------------------------------------------------------------- the fixer

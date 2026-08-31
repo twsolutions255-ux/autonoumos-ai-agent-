@@ -31,6 +31,27 @@ from ..guardrails.policy import Decision, Outcome, Policy, Risk, ToolPolicy
 log = logging.getLogger("atlas.tools")
 
 
+#: Where `strict` is worth one of the API's twenty slots.
+#:
+#: The argument for strict was always "a hallucinated field silently ignored is
+#: worse than a validation error the model can see". That argument is about
+#: CONSEQUENCE, so the classes it actually covers are the ones where being
+#: wrong reaches outside Atlas's own head: a stranger is contacted, a call
+#: batch is released, money moves, something is destroyed.
+#:
+#: READ and INTERNAL are excluded because a stray field there costs a wasted
+#: call. APP_WRITE is excluded for a less comfortable reason -- it is thirteen
+#: tools, and including it puts the total at twenty-nine, over the cap. It is
+#: reversible and invisible outside the company, which makes it the right thing
+#: to drop, but it is a trade rather than a free win.
+STRICT_RISKS = frozenset({
+    Risk.STAGE, Risk.EXTERNAL_COMMS, Risk.MONEY, Risk.IRREVERSIBLE,
+})
+
+#: The API's own limit. Named here so the test that enforces it can say why.
+MAX_STRICT_TOOLS = 20
+
+
 def _strictify(schema: dict) -> dict:
     """An object schema the API will accept under strict mode, all the way down.
 
@@ -88,16 +109,32 @@ class Tool:
     def spec(self) -> dict:
         """The Anthropic tool definition.
 
-        `strict` is on: these tools drive a live business, and a hallucinated
-        extra field silently ignored is a worse outcome than a validation
-        error the model can see and correct.
+        `strict` used to be on for EVERY tool, with a good reason: these tools
+        drive a live business, and a hallucinated extra field silently ignored
+        is worse than a validation error the model can see and correct.
+
+        The API caps strict tools at twenty, and Atlas offers forty-eight at
+        the shipped autonomy level:
+
+            400 - Too many strict tools (48). The maximum number of strict
+            tools supported is 20.
+
+        So it now goes where the reason actually applies. A stray field on a
+        READ is a wasted call. A stray field on something that texts a
+        stranger, stages a call batch, moves money or destroys a record is the
+        case the argument was written about. Those four classes are sixteen
+        tools in total, which stays under the cap even at full autonomy when
+        every tool is offered.
+
+        The schema itself is unchanged either way -- _strictify still forbids
+        extra properties at every level, on every tool. What strict adds is the
+        API enforcing it rather than the model being asked to.
         """
-        schema = _strictify(self.input_schema)
         return {
             "name": self.name,
             "description": self.description.strip(),
-            "input_schema": schema,
-            "strict": True,
+            "input_schema": _strictify(self.input_schema),
+            "strict": self.policy.risk in STRICT_RISKS,
         }
 
 
