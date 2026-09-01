@@ -308,7 +308,14 @@ class Runtime:
     async def chat(self, message: str, *, history_limit: int = 12) -> dict:
         """The owner talking to Atlas. Same brain, same tools, same guardrails."""
         if self.engine is None:
-            return {"reply": "ANTHROPIC_API_KEY is not set, so I cannot think yet.",
+            # Names the key that would ACTUALLY fix it. This said
+            # ANTHROPIC_API_KEY unconditionally, which on a DeepSeek
+            # deployment is a variable the owner could set correctly and
+            # still get the same refusal. The same bug was fixed once in
+            # reasoning_key_needed and left standing here, which is why the
+            # helper is reused rather than the string rewritten.
+            return {"reply": "I cannot think yet — %s."
+                             % self.settings.reasoning_key_needed,
                     "actions": []}
         self._roll_day()
         cycle_id = str(uuid.uuid4())
