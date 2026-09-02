@@ -143,6 +143,11 @@ class Settings:
 
     # ---------- cadence ----------
     tick_seconds: int = 900
+    #: How often a WORK cycle may run. The tick decides how often Atlas
+    #: checks whether anything is owed; this decides how often the expensive
+    #: "advance the plan" reasoning actually happens. Hourly ticks with no
+    #: cap meant ~22 planner calls a day that mostly re-read the same numbers.
+    work_every_hours: float = 4.0
     #: Drive the app's own scheduled jobs on a timer, independently of the
     #: reasoning cycle. Off by default: these jobs call strangers and email
     #: clients, so switching them on is an outward-facing decision.
@@ -295,6 +300,7 @@ def load() -> Settings:
         approval_threshold_usd=_float("ATLAS_APPROVAL_THRESHOLD_USD", 250.0),
 
         tick_seconds=_int("ATLAS_TICK_SECONDS", 900),
+        work_every_hours=_float("ATLAS_WORK_EVERY_HOURS", 4.0),
         drive_app_jobs=_bool("ATLAS_DRIVE_APP_JOBS", False),
         app_job_seconds=_int("ATLAS_APP_JOB_SECONDS", 300),
         morning_brief_hour=_int("ATLAS_MORNING_HOUR", 7),

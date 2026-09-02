@@ -46,7 +46,12 @@ services:
       # every iteration re-sends the whole conversation, so cost grows with the
       # SQUARE of the cap. Observed cycles finish in well under 24.
       - key: ATLAS_MAX_TOOL_ITERATIONS
-        value: "24"
+        value: "16"
+      # Work cycles are rationed: at most one every N hours, on the fast
+      # model at half the cap. Morning and evening still run daily on pro.
+      # Without this an hourly tick was ~22 pro planning turns a day.
+      - key: ATLAS_WORK_EVERY_HOURS
+        value: "4"
       # A real cap, not a ceiling nobody reaches. At hourly cycles on pro this
       # is several times the expected spend, so it stops a runaway without
       # stopping ordinary work.

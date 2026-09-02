@@ -226,6 +226,46 @@ async def test_a_refused_action_is_named_to_the_next_cycle_so_it_is_not_asked_ag
 
 
 @pytest.mark.asyncio
+async def test_work_cycles_are_rationed_and_run_on_the_cheap_model():
+    """Hourly ticks with no cap were ~22 planner calls a day on the pro
+    model, mostly re-reading the same numbers. Work is now owed only every
+    ATLAS_WORK_EVERY_HOURS, and takes the fast model at half the cap."""
+    from datetime import timedelta as _td
+    from atlas.brain.loop import now as _now
+    rt = await build_runtime(ATLAS_WORK_EVERY_HOURS="4", DEEPSEEK_API_KEY="test-only",
+                             ATLAS_MODEL="deepseek-v4-pro",
+                             ATLAS_FAST_MODEL="deepseek-v4-flash",
+                             ATLAS_MAX_TOOL_ITERATIONS="24")
+    today = _now().date().isoformat()
+    # Both once-a-day cycles done: what is owed depends only on work timing.
+    assert rt._due_kind(today, today, None) == "work"
+    assert rt._due_kind(today, today, _now() - _td(hours=1)) == ""
+    assert rt._due_kind(today, today, _now() - _td(hours=5)) == "work"
+
+    assert rt._model_for("work") == ("deepseek-v4-flash", 12)
+    assert rt._model_for("morning") == ("deepseek-v4-pro", 24)
+    assert rt._model_for("evening") == ("deepseek-v4-pro", 24)
+
+    # And the choice actually reaches the engine.
+    seen = {}
+    async def fake_run(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop here")
+    rt.engine.run = fake_run
+    await rt.run_cycle("work")
+    assert seen["model"] == "deepseek-v4-flash" and seen["max_iterations"] == 12
+
+    # A redeploy reads the last work start from storage rather than granting
+    # a fresh one.
+    await rt.store["cycles"].insert_one({
+        "id": "x", "kind": "work", "status": "done",
+        "started_at": (_now() - _td(hours=1)).isoformat()})
+    last = await rt._last_work_at()
+    assert last is not None and rt._due_kind(today, today, last) == ""
+    await rt.close()
+
+
+@pytest.mark.asyncio
 async def test_a_cycle_that_crashes_still_leaves_a_record():
     rt = await build_runtime()
 

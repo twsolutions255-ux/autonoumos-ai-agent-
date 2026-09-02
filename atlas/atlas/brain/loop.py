@@ -232,10 +232,15 @@ class Runtime:
                 cycle=kind,
             )
             opener = await self._opening_message(kind, note)
+            # Morning and evening plan and review on the strong model. A work
+            # cycle takes one step of an existing plan, and the cheap model
+            # is enough for that -- the plan is the thinking, done already.
+            model, cap = self._model_for(kind)
             result = await self.engine.run(
                 system=system,
                 messages=[{"role": "user", "content": opener}],
                 tools=registry.specs(self.policy),
+                model=model, max_iterations=cap,
             )
             self._spend_today += result.usage.cost_usd
             record["usage"] = result.usage.as_dict()
@@ -333,6 +338,17 @@ class Runtime:
         return ("Nothing about your authority has changed since these were "
                 "refused:\n" + "\n".join(lines) + tail)
 
+    def _model_for(self, kind: str) -> tuple:
+        """Which model and iteration cap a cycle kind gets.
+
+        Work cycles: the fast model and half the cap. Anything that plans,
+        reviews, or talks to the owner keeps the full model and full cap.
+        """
+        if kind == "work":
+            return (self.settings.fast_model,
+                    max(6, self.settings.max_tool_iterations // 2))
+        return self.settings.model, self.settings.max_tool_iterations
+
     async def _close_cycle(self, record: dict, *, summary: str = "",
                            error: str = "") -> dict:
         record["ended_at"] = iso()
@@ -418,7 +434,8 @@ class Runtime:
 
     # ------------------------------------------------------------- scheduler
 
-    def _due_kind(self, last_morning: str, last_evening: str) -> str:
+    def _due_kind(self, last_morning: str, last_evening: str,
+                  last_work_at: Optional[datetime] = None) -> str:
         """Which cycle is owed right now.
 
         Morning and evening are once-a-day events; everything else is a work
@@ -441,6 +458,14 @@ class Runtime:
             return "morning"
         if n.hour >= evening_h and last_evening != today:
             return "evening"
+        # Work is rationed. Morning and evening are once a day by nature;
+        # without this, every tick between them was a full planning turn on
+        # the expensive model, and the numbers rarely move hour to hour.
+        # "" means nothing is owed and the loop just sleeps.
+        if last_work_at is not None:
+            since = (n - last_work_at).total_seconds() / 3600.0
+            if since < self.settings.work_every_hours:
+                return ""
         return "work"
 
     async def _last_cycle_days(self) -> tuple:
@@ -458,10 +483,25 @@ class Runtime:
             out.append((row or {}).get("day") or "")
         return tuple(out)
 
+    async def _last_work_at(self) -> Optional[datetime]:
+        """When the last work cycle STARTED, from storage, so a redeploy does
+        not hand Atlas a fresh work cycle it has just had."""
+        if not self.store:
+            return None
+        row = await self.store["cycles"].find_one(
+            {"kind": "work", "status": {"$in": ["done", "failed"]}},
+            {"_id": 0, "started_at": 1}, sort=[("started_at", -1)])
+        try:
+            when = datetime.fromisoformat(row["started_at"])
+        except (TypeError, KeyError, ValueError):
+            return None
+        return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
     async def serve_forever(self) -> None:
         """Drive cycles on a timer until told to stop."""
         self._running = True
         last_morning, last_evening = await self._last_cycle_days()
+        last_work_at = await self._last_work_at()
         log.info("atlas: scheduler running, tick every %ss "
                  "(last morning: %s, last evening: %s)",
                  self.settings.tick_seconds, last_morning or "never",
@@ -471,14 +511,21 @@ class Runtime:
                 if self.policy.kill_switch:
                     log.info("atlas: kill switch on, skipping tick")
                 else:
-                    kind = self._due_kind(last_morning, last_evening)
-                    result = await self.run_cycle(kind)
-                    if not result.get("skipped"):
-                        today = now().date().isoformat()
-                        if kind == "morning":
-                            last_morning = today
-                        elif kind == "evening":
-                            last_evening = today
+                    kind = self._due_kind(last_morning, last_evening, last_work_at)
+                    if not kind:
+                        log.info("atlas: nothing owed this tick; next work cycle "
+                                 "in %.1fh", self.settings.work_every_hours
+                                 - (now() - last_work_at).total_seconds() / 3600.0)
+                    else:
+                        result = await self.run_cycle(kind)
+                        if not result.get("skipped"):
+                            today = now().date().isoformat()
+                            if kind == "morning":
+                                last_morning = today
+                            elif kind == "evening":
+                                last_evening = today
+                            else:
+                                last_work_at = now()
             except Exception:
                 log.exception("atlas: scheduler tick failed")
             await asyncio.sleep(max(60, self.settings.tick_seconds))
