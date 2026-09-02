@@ -65,7 +65,21 @@ CHANNELS = ("email", "sms")
 #: has none — see the module docstring. Filling one in is the ONLY change
 #: needed to make sends real; everything downstream (the CRM touch, the counts)
 #: already handles a success.
-SEND_ENDPOINTS: dict[str, Optional[str]] = {"email": None, "sms": None}
+#: Wired on 2026-09-02 to POST /admin/prospects/{id}/send, which the app added
+#: for exactly this caller. The route checks the do-not-contact list, sends,
+#: and records the CRM touch itself; it answers with an `outcome` word from
+#: the app's PROSPECT_SEND_OUTCOMES: sent / suppressed / no_address / failed.
+SEND_ENDPOINTS: dict[str, Optional[str]] = {
+    "email": "/admin/prospects/{prospect_id}/send",
+    "sms": "/admin/prospects/{prospect_id}/send",
+}
+
+#: How the app's outcome words map onto this tool's statuses. "suppressed"
+#: becomes opted_out so the batch counts it with the pre-checked opt-outs;
+#: anything unrecognised is FAILED, because an answer this tool cannot read
+#: is not evidence that anything was sent.
+_APP_OUTCOMES = {"sent": "sent", "suppressed": "opted_out",
+                 "no_address": "failed", "failed": "failed"}
 
 _NOT_WIRED = (
     "not wired: the app has no endpoint for sending {what} to a prospect. "
@@ -125,12 +139,12 @@ async def _opt_out_state(client, prospect: dict) -> tuple:
 
 async def _send_one(client, channel: str, prospect: dict, subject: str,
                     body: str) -> tuple:
-    """(status, reason). status is 'sent', 'not_wired' or 'failed'.
+    """(status, reason). status is 'sent', 'opted_out', 'not_wired' or 'failed'.
 
-    On a real send this also writes the CRM touch — the same
-    POST /admin/prospects/{id}/touch that record_outreach_sent uses — so the
-    prospect moves to 'contacted' and the follow-up clock starts. That write
-    happens ONLY after the send succeeded, never before and never instead.
+    The app's send route records the CRM touch ITSELF on a real send, so this
+    function must not post a second one -- that is how one message becomes
+    two rows and the follow-up clock starts twice. It reads the route's
+    `outcome` word and passes the app's own `detail` back as the reason.
     """
     endpoint = SEND_ENDPOINTS.get(channel)
     if not endpoint:
@@ -139,24 +153,20 @@ async def _send_one(client, channel: str, prospect: dict, subject: str,
             fn="email" if channel == "email" else "sms")
 
     pid = str(prospect.get("id"))
-    payload: dict[str, Any] = {"body": body}
+    payload: dict[str, Any] = {"channel": channel, "body": body}
     if channel == "email":
         payload["subject"] = subject
     try:
-        await client.post(endpoint.format(prospect_id=pid), payload)
+        res = await client.post(endpoint.format(prospect_id=pid), payload)
     except Exception as e:
         return "failed", f"the app refused the send: {str(e)[:200]}"
 
-    try:
-        await client.post(f"/admin/prospects/{pid}/touch", {
-            "channel": channel, "subject": subject, "body": body,
-            "note": "Sent by Atlas."})
-    except Exception as e:
-        # Sent but unlogged. Say so loudly: the message is out and the CRM does
-        # not know, which is how the same prospect gets messaged twice.
-        return "sent", (f"SENT, but the CRM touch failed to record: {str(e)[:200]}. "
-                        f"Log it by hand or this prospect will be worked again.")
-    return "sent", ""
+    outcome = str((res or {}).get("outcome") or "") if isinstance(res, dict) else ""
+    status = _APP_OUTCOMES.get(outcome, "failed")
+    detail = str((res or {}).get("detail") or "") if isinstance(res, dict) else ""
+    if status == "failed" and not detail:
+        detail = f"the app answered without a readable outcome: {str(res)[:160]}"
+    return status, detail
 
 
 async def _run(ctx: ToolContext, prospect_ids: list, channel: str,

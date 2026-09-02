@@ -61,8 +61,16 @@ class FakeClient:
                     "checked": {"phone": phone, "email": params.get("email")}}
         raise AssertionError("unexpected GET %s" % path)
 
+    #: Optional per-test hook: (path, payload) -> the app's JSON answer.
+    answer_post = None
+
     async def post(self, path, body=None, **kw):
         self.calls.append(("POST", path, body or {}))
+        if self.answer_post is not None:
+            return self.answer_post(path, body or {})
+        if path.endswith("/send"):
+            # The real route answers an outcome word, never a bare ok.
+            return {"outcome": "sent", "detail": "Sent and recorded on the prospect."}
         return {"ok": True}
 
     def paths(self, method=None):
@@ -83,12 +91,12 @@ async def call(ctx, name, args):
 
 @pytest.fixture
 def wired():
-    """Point the send endpoints at a route the fake client answers."""
+    """Historical name. SEND_ENDPOINTS now points at the real route,
+    POST /admin/prospects/{id}/send, and the fake client answers it the way
+    the app does -- with an outcome word. Kept so the send-path tests read
+    as what they are: tests of the wired path."""
     before = dict(outreach.SEND_ENDPOINTS)
-    outreach.SEND_ENDPOINTS.update({
-        "email": "/admin/prospects/{prospect_id}/send-email",
-        "sms": "/admin/prospects/{prospect_id}/send-sms",
-    })
+    assert all(v and v.endswith("/send") for v in before.values()), before
     yield
     outreach.SEND_ENDPOINTS.clear()
     outreach.SEND_ENDPOINTS.update(before)
@@ -235,7 +243,11 @@ async def test_an_unknown_prospect_is_reported_not_raised():
 # ------------------------------------------------------------- not-wired path
 
 @pytest.mark.asyncio
-async def test_the_send_is_honest_that_the_app_cannot_send():
+async def test_the_send_is_honest_when_the_app_cannot_send(monkeypatch):
+    """The endpoints are wired now; this keeps the honesty for the day one
+    is not (a route renamed, a deploy behind). An unwired channel says so
+    and writes nothing, rather than logging a message that never left."""
+    monkeypatch.setitem(outreach.SEND_ENDPOINTS, "email", None)
     client = FakeClient()
     ctx = harness(client)
     result = await call(ctx, "send_prospect_email", {
@@ -259,19 +271,41 @@ async def test_the_sms_tool_reports_counts_never_a_bare_ok():
 # ------------------------------------------------------------ the CRM write
 
 @pytest.mark.asyncio
-async def test_a_real_send_writes_the_crm_touch(wired):
-    """The moment a send endpoint exists, the follow-up clock must start —
-    otherwise the same prospect is worked twice."""
+async def test_a_real_send_is_recorded_by_the_route_not_by_atlas(wired):
+    """POST /admin/prospects/{id}/send records the CRM touch itself. Atlas
+    posting a second touch would turn one message into two rows and start
+    the follow-up clock twice, so it must not."""
     client = FakeClient()
     ctx = harness(client)
-    result = await call(ctx, "send_outreach_batch", {
-        "prospect_ids": ["p1", "p2", "p3"], "channel": "sms",
-        "template_id_or_body": "Hello"})
-    assert result["sent"] == 2 and result["skipped_opt_out"] == 1
-    assert "/admin/prospects/p1/touch" in client.paths("POST")
-    assert "/admin/prospects/p2/touch" in client.paths("POST")
-    # The opted-out one was neither sent nor logged.
-    assert "/admin/prospects/p3/touch" not in client.paths("POST")
+    result = await outreach._run(ctx, ["p1", "p2", "p3"], "email", "Subject", "Body")
+    sends = [p for p in client.paths("POST") if p.endswith("/send")]
+    assert "/admin/prospects/p1/send" in sends and "/admin/prospects/p2/send" in sends
+    assert "/admin/prospects/p3/send" not in sends          # opted out, never sent
+    assert not any(p.endswith("/touch") for p in client.paths("POST"))
+    assert result["sent"] == 2
+
+
+async def test_the_apps_outcome_words_are_read_not_assumed(wired):
+    """The route answers a word, not a boolean: suppressed and no_address and
+    failed are three different reasons nothing went out. An answer the tool
+    cannot read counts as failed, never as sent."""
+    client = FakeClient(prospects=[
+        {"id": pid, "name": "Clean Co " + pid, "phone": "+1555222000%d" % n,
+         "email": "%s@clean.test" % pid, "status": "new"}
+        for n, pid in enumerate(("p1", "p2", "p4", "p5"))])
+    ctx = harness(client)
+    answers = {"p1": {"outcome": "suppressed", "detail": "asked not to be contacted"},
+               "p2": {"outcome": "no_address", "detail": "no phone on file"},
+               "p4": {"outcome": "sent", "detail": "Sent and recorded on the prospect."},
+               "p5": {"something": "else"}}
+    client.answer_post = lambda path, payload: answers[path.split("/")[3]]
+    result = await outreach._run(ctx, ["p1", "p2", "p4", "p5"], "sms", "", "Body")
+    by_id = {r["prospect_id"]: r for r in result["results"]}
+    assert by_id["p1"]["status"] == "opted_out" and "asked not" in by_id["p1"]["reason"]
+    assert by_id["p2"]["status"] == "failed" and "no phone" in by_id["p2"]["reason"]
+    assert by_id["p4"]["status"] == "sent"
+    assert by_id["p5"]["status"] == "failed" and "readable outcome" in by_id["p5"]["reason"]
+    assert result["sent"] == 1
 
 
 @pytest.mark.asyncio
