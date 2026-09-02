@@ -270,6 +270,121 @@ async def test_work_cycles_are_rationed_and_run_on_the_cheap_model():
 
 
 @pytest.mark.asyncio
+async def test_each_cycle_is_only_offered_the_tools_it_needs():
+    """The largest cost lever in the file, and it was unused: every call
+    shipped all 89 tool specifications, and this prompt is input-dominated.
+    A work cycle has no use for the billing tools; an evening review has no
+    use for the 29 growth tools. What each keeps is decided by what it is FOR
+    -- the cycle that makes money keeps everything that makes money."""
+    from atlas.brain.loop import Runtime
+    from atlas.tools.registry import registry
+
+    everything = {t["name"] if isinstance(t, dict) else t.get("name")
+                  for t in registry.specs(None)}
+    work = {t["name"] if isinstance(t, dict) else t.get("name")
+            for t in registry.specs(None, groups=Runtime.CYCLE_TOOL_GROUPS["work"])}
+
+    assert len(work) < len(everything), "work should not be offered everything"
+    # The two things the owner actually asked Atlas for stay.
+    assert "announce_new_appointments" in work
+    assert any("lead" in n or "prospect" in n or "market" in n for n in work)
+    # The morning plans the day, so it still sees everything.
+    assert Runtime.CYCLE_TOOL_GROUPS["morning"] is None
+    # An unknown kind falls back to everything rather than to nothing: a cycle
+    # with no tools is worse than an expensive one.
+    assert Runtime.CYCLE_TOOL_GROUPS.get("chat", "missing") in (None, "missing")
+
+
+@pytest.mark.asyncio
+async def test_a_work_cycle_does_not_pay_to_discover_it_can_do_nothing():
+    """The owner: make it work "only when its able to gen me leads and
+    apoinments and sms works". A work cycle costs real money and exists to
+    find leads, book them and message people. With all of that unavailable it
+    would spend the money to report that it could not do anything."""
+    rt = await build_runtime()
+    install(rt.engine, [])          # asking the model at all would raise
+
+    async def all_down(path, **kw):
+        return {"checks": {
+            "lead_search": {"connected": False, "label": "Lead search",
+                            "detail": "Yelp trial expired"},
+            "sms": {"connected": False, "label": "Texting", "detail": "Telnyx refused"},
+            "cold_calling": {"connected": False, "label": "Cold calling", "detail": "no agent"},
+        }}
+    rt.client.get = all_down
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert record["actions"] == 0
+    assert "without spending anything" in record["summary"]
+    assert "Yelp trial expired" in record["summary"]
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_one_working_capability_is_enough_to_justify_the_cycle():
+    """Deliberately generous. The question is not "is everything healthy" --
+    it never is -- but "is there any way to advance the pipeline". Being
+    strict would stop Atlas working because an unrelated integration is
+    amber."""
+    rt = await build_runtime()
+    install(rt.engine, [SimpleNamespace(
+        content=[text_block("Worked one lead.")],
+        stop_reason="end_turn", usage=usage())])
+
+    async def one_up(path, **kw):
+        return {"checks": {
+            "lead_search": {"connected": True, "label": "Lead search"},
+            "sms": {"connected": False, "label": "Texting", "detail": "down"},
+        }}
+    rt.client.get = one_up
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert "without spending anything" not in (record["summary"] or "")
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_health_check_does_not_block_the_cycle():
+    """"We could not check" is not "nothing works". Refusing to run on a failed
+    lookup would be the same collapse this file keeps fixing."""
+    rt = await build_runtime()
+    install(rt.engine, [SimpleNamespace(
+        content=[text_block("Ran anyway.")],
+        stop_reason="end_turn", usage=usage())])
+
+    async def boom(path, **kw):
+        raise RuntimeError("health endpoint unreachable")
+    rt.client.get = boom
+
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done"
+    assert "without spending anything" not in (record["summary"] or "")
+    await rt.close()
+
+
+@pytest.mark.asyncio
+async def test_the_morning_still_runs_when_everything_is_broken():
+    """The morning brief is HOW he finds out things are broken. Gating it on
+    the same check would hide the very problem it is detecting."""
+    rt = await build_runtime()
+    install(rt.engine, [SimpleNamespace(
+        content=[text_block("Everything is down; here is what to fix.")],
+        stop_reason="end_turn", usage=usage())])
+
+    async def all_down(path, **kw):
+        return {"checks": {"lead_search": {"connected": False, "label": "Lead search"},
+                           "sms": {"connected": False, "label": "Texting"}}}
+    rt.client.get = all_down
+
+    record = await rt.run_cycle("morning")
+    assert record["status"] == "done"
+    assert "without spending anything" not in (record["summary"] or "")
+    await rt.close()
+
+
+@pytest.mark.asyncio
 async def test_a_cycle_that_crashes_still_leaves_a_record():
     rt = await build_runtime()
 

@@ -223,6 +223,24 @@ class Runtime:
             return await self._close_cycle(record, summary=(
                 "The kill switch is on. Atlas looked at nothing and did nothing."))
 
+        # Can a work cycle actually achieve anything right now?
+        #
+        # The owner: make Atlas work "only when its able to gen me leads and
+        # apoinments and sms works". A work cycle costs real money and its
+        # whole job is to find leads, book them and message people. When none
+        # of those can happen -- lead search dead, SMS refusing, the dialler
+        # unconfigured -- the cycle spends the money and reports that it could
+        # not do anything, which is the worst of both.
+        #
+        # The check is one HTTP call to the app's own health endpoint and
+        # costs no tokens at all. It gates ONLY work cycles: the morning plan
+        # and the evening review are how he finds out things are broken, and
+        # skipping those would hide the very problem this is detecting.
+        if kind == "work":
+            blocked = await self._work_is_pointless()
+            if blocked:
+                return await self._close_cycle(record, summary=blocked)
+
         try:
             system = prompts.build_system_prompt(
                 autonomy=self.policy.autonomy,
@@ -236,10 +254,11 @@ class Runtime:
             # cycle takes one step of an existing plan, and the cheap model
             # is enough for that -- the plan is the thinking, done already.
             model, cap = self._model_for(kind)
+            groups = self.CYCLE_TOOL_GROUPS.get(kind, None)
             result = await self.engine.run(
                 system=system,
                 messages=[{"role": "user", "content": opener}],
-                tools=registry.specs(self.policy),
+                tools=registry.specs(self.policy, groups=groups),
                 model=model, max_iterations=cap,
             )
             self._spend_today += result.usage.cost_usd
@@ -360,6 +379,83 @@ class Runtime:
     #: the model's input rate. The evening review was on the pro model for no
     #: reason anybody could name: it reads numbers and writes a summary.
     PLANNING_CYCLES = ("morning",)
+
+    #: Which tool GROUPS each cycle kind is offered.
+    #:
+    #: This is the largest cost lever in the file and it was unused. Every call
+    #: shipped all 89 tool specifications, and the prompt is input-dominated --
+    #: the specs outweigh the conversation. A work cycle advancing the pipeline
+    #: has no use for the billing tools, and an evening review has no use for
+    #: the 29 growth tools; sending them costs input tokens on every one of the
+    #: turns inside that cycle.
+    #:
+    #: `None` means every group, and is what chat gets: the owner asks
+    #: arbitrary questions and a tool missing from the list is a question he
+    #: cannot get answered.
+    #:
+    #: What each kind keeps is decided by what it is FOR, not by what is
+    #: cheapest -- the two cycles that make money keep everything that makes
+    #: money.
+    CYCLE_TOOL_GROUPS = {
+        # Plans the day, so it needs to see everything.
+        "morning": None,
+        # Advances the plan: find leads, work them, book them, say so.
+        "work": ["growth", "pipeline", "observe", "comms", "clientcare"],
+        # Reads numbers and writes them up.
+        "evening": ["observe", "self", "comms", "pipeline", "money"],
+    }
+
+    #: The capabilities a work cycle exists to use. If none of them work,
+    #: there is nothing for it to do that is worth paying a model to decide.
+    WORK_NEEDS = ("lead_search", "lead_discovery", "sms", "cold_calling",
+                  "speed_to_lead")
+
+    async def _work_is_pointless(self) -> str:
+        """"" when a work cycle can do something, or the reason it cannot.
+
+        Deliberately generous: ONE working capability is enough to justify the
+        cycle. The question is not "is everything healthy" -- it never is --
+        but "is there any way for this cycle to advance the pipeline". Being
+        strict here would stop Atlas working on the strength of an unrelated
+        integration being amber.
+
+        A health endpoint that cannot be read does NOT block the cycle. "We
+        could not check" is not "nothing works", and refusing to run on a
+        failed lookup would be the same collapse this file keeps fixing.
+        """
+        if self.client is None:
+            return ""
+        try:
+            health = await self.client.get("/admin/system-health")
+        except Exception as e:
+            log.warning("atlas: could not read system health before a work "
+                        "cycle, so running it anyway: %s", str(e)[:160])
+            return ""
+        checks = (health or {}).get("checks") or {}
+        if not isinstance(checks, dict) or not checks:
+            return ""
+
+        working = []
+        broken = []
+        for name in self.WORK_NEEDS:
+            row = checks.get(name)
+            if not isinstance(row, dict):
+                continue            # this app does not report it; not evidence
+            (working if row.get("connected") else broken).append(
+                (row.get("label") or name, row.get("detail") or ""))
+        if working or not broken:
+            return ""
+
+        # Everything it needs is down, and at least one thing said so.
+        lines = ["Skipped without spending anything: nothing this cycle exists "
+                 "to do can be done right now."]
+        for label, detail in broken:
+            lines.append("  - %s: %s" % (label, (detail or "not working")[:200]))
+        lines.append("A work cycle finds leads, books them and messages people. "
+                     "With all of that unavailable it would cost money to "
+                     "report that it could not do anything. The morning and "
+                     "evening cycles still run, so this stays visible.")
+        return "\n".join(lines)
 
     def _model_for(self, kind: str) -> tuple:
         """Which model and iteration cap a cycle kind gets.
