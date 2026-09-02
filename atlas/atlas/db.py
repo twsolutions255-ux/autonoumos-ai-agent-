@@ -30,6 +30,7 @@ COLLECTIONS = {
     "metrics": "KPI snapshots over time, so Atlas can see its own effect.",
     "chat": "The owner's conversation with Atlas.",
     "counters": "Rate-limit events, persisted so a restart cannot reset a daily cap.",
+    "builder_audits": "Atlas Builder sweeps: every client's systems checked, with the app's own fix for each fault.",
 }
 
 

@@ -321,6 +321,25 @@ async def stop(body: SwitchIn) -> dict:
     return runtime.policy.snapshot()
 
 
+@app.post("/builder/run", dependencies=[Depends(require_key)])
+async def builder_run() -> dict:
+    """Atlas Builder: sweep every client's systems now and store the result."""
+    from .tools.builder import run_audit
+    if runtime.client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Atlas is not connected to the app, so it cannot check anybody's "
+                   "systems. Set TWS_API_URL and credentials.")
+    return await run_audit(runtime.client, runtime.store)
+
+
+@app.get("/builder/latest", dependencies=[Depends(require_key)])
+async def builder_latest() -> dict:
+    """The most recent sweep, without re-running it."""
+    from .tools.builder import latest_audit
+    return await latest_audit(runtime.store)
+
+
 @app.get("/tools", dependencies=[Depends(require_key)])
 async def tools() -> dict:
     """Every capability, its risk class, and whether it is currently reachable."""
