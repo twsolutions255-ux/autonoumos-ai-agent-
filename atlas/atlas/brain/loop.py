@@ -251,6 +251,16 @@ class Runtime:
                 record["truncated"] = True
             return await self._close_cycle(record, summary=result.text)
         except BudgetExceeded as e:
+            # Loud on purpose. This was caught and closed with an error string
+            # nobody reads, so an Atlas that had spent its day's allowance at
+            # 9am was indistinguishable in the logs from an Atlas with nothing
+            # to do -- "cycle work failed in 1.3s (0 actions)" and no more.
+            # The owner then asks why it is quiet and there is nothing to find.
+            log.error("atlas: STOPPED BY THE DAILY BUDGET -- %s. No further "
+                      "cycle will do anything until midnight %s, or until "
+                      "ATLAS_DAILY_LLM_BUDGET_USD is raised above what has "
+                      "already been spent today.",
+                      e, getattr(self.settings, "timezone", "local time"))
             return await self._close_cycle(record, error=str(e))
         except Exception as e:
             log.exception("atlas: cycle failed")
@@ -338,16 +348,30 @@ class Runtime:
         return ("Nothing about your authority has changed since these were "
                 "refused:\n" + "\n".join(lines) + tail)
 
+    #: The one cycle a day that genuinely plans. Everything else either takes
+    #: one step of a plan that already exists or writes up what happened, and
+    #: neither needs the expensive model.
+    #:
+    #: Measured on 2026-09-02, the day the owner watched $5 of DeepSeek credit
+    #: become $2: four cycles, 11 to 19 actions each, roughly $0.75 a cycle.
+    #: The driver is not how often cycles run -- it is that every tool
+    #: iteration re-sends the whole conversation plus 87 tool specifications,
+    #: so cost grows with the SQUARE of the iteration cap and linearly with
+    #: the model's input rate. The evening review was on the pro model for no
+    #: reason anybody could name: it reads numbers and writes a summary.
+    PLANNING_CYCLES = ("morning",)
+
     def _model_for(self, kind: str) -> tuple:
         """Which model and iteration cap a cycle kind gets.
 
-        Work cycles: the fast model and half the cap. Anything that plans,
-        reviews, or talks to the owner keeps the full model and full cap.
+        Only the morning plan gets the strong model. Work and evening cycles
+        get the fast one at half the cap: a work cycle advances a plan that
+        already exists, and an evening review reports what happened.
         """
-        if kind == "work":
-            return (self.settings.fast_model,
-                    max(6, self.settings.max_tool_iterations // 2))
-        return self.settings.model, self.settings.max_tool_iterations
+        if kind in self.PLANNING_CYCLES:
+            return self.settings.model, self.settings.max_tool_iterations
+        return (self.settings.fast_model,
+                max(6, self.settings.max_tool_iterations // 2))
 
     async def _close_cycle(self, record: dict, *, summary: str = "",
                            error: str = "") -> dict:

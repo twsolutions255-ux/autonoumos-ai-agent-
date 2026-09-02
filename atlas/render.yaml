@@ -45,8 +45,11 @@ services:
       # The real cost driver is iterations per cycle, not how often cycles run:
       # every iteration re-sends the whole conversation, so cost grows with the
       # SQUARE of the cap. Observed cycles finish in well under 24.
+      # Cost grows with the SQUARE of this: every iteration re-sends the whole
+      # conversation plus 87 tool specs. Measured 2026-09-02 at 16: roughly
+      # $0.75 a cycle, which turned $5 of credit into $2 in an afternoon.
       - key: ATLAS_MAX_TOOL_ITERATIONS
-        value: "16"
+        value: "10"
       # Work cycles are rationed: at most one every N hours, on the fast
       # model at half the cap. Morning and evening still run daily on pro.
       # Without this an hourly tick was ~22 pro planning turns a day.

@@ -242,9 +242,13 @@ async def test_work_cycles_are_rationed_and_run_on_the_cheap_model():
     assert rt._due_kind(today, today, _now() - _td(hours=1)) == ""
     assert rt._due_kind(today, today, _now() - _td(hours=5)) == "work"
 
+    # Only the morning plans, so only the morning pays for the strong model.
+    # The evening review reads numbers and writes them up; it was on pro for
+    # no reason anybody could name, and it was one of the two most expensive
+    # cycles of the day.
     assert rt._model_for("work") == ("deepseek-v4-flash", 12)
+    assert rt._model_for("evening") == ("deepseek-v4-flash", 12)
     assert rt._model_for("morning") == ("deepseek-v4-pro", 24)
-    assert rt._model_for("evening") == ("deepseek-v4-pro", 24)
 
     # And the choice actually reaches the engine.
     seen = {}
