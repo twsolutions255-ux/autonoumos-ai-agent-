@@ -28,10 +28,27 @@ services:
         sync: false
       # Ships inert on purpose: lowest useful authority, sandbox on. Raise both
       # from the console once you have read a few cycles.
+      # THIS FILE WINS OVER THE RENDER DASHBOARD.
+      #
+      # Every deploy re-syncs the blueprint, so a value changed in the console
+      # is silently reverted the next time anybody pushes. It has now bitten
+      # twice: ATLAS_TICK_SECONDS sat at 900 here while the service ran 3600,
+      # and on 2026-09-02 an autonomy of 'assist' and a budget cut made in the
+      # console both reverted on the next push -- the second of which would
+      # have let Atlas spend the owner's last $2 of DeepSeek credit overnight.
+      #
+      # So: change them HERE. The console is for reading, and for a change you
+      # intend to lose on the next deploy.
+      #
+      # 'assist' lets Atlas write to the app and talk to the team, and still
+      # QUEUES anything that would reach a prospect for the owner's approval
+      # (EXTERNAL_COMMS requires 'operate'). Sandbox off means those writes are
+      # real. Both were the owner's decision on 2026-09-02, when he asked for
+      # an Atlas that could actually work the pipeline.
       - key: ATLAS_AUTONOMY
-        value: recommend
+        value: assist
       - key: ATLAS_SANDBOX
-        value: "true"
+        value: "false"
       # Money. DeepSeek, not Claude: an hour of Opus at high effort cost about
       # ten dollars on the first day this ran, which is not survivable for a
       # company with no revenue yet. Pro for the planner because cycles are
@@ -63,8 +80,17 @@ services:
       # lowering it below what has already been spent today stops Atlas until
       # midnight -- and it fails SILENTLY, because BudgetExceeded closes the
       # cycle without an error log. Change it in the morning, not the evening.
+      # Measured, not guessed. On 2026-09-02 four cycles cost about $0.75 each
+      # and turned $5 of credit into $2 in an afternoon. With the evening
+      # review moved off the pro model and the iteration cap at 10, a day of
+      # morning + evening + a few work cycles should sit well inside this.
+      #
+      # It is checked against the day's spend READ BACK FROM THE DATABASE, so
+      # lowering it below what today has already cost stops Atlas until
+      # midnight America/New_York. That is now a loud log line rather than a
+      # silent one, but it is still worth changing in a morning.
       - key: ATLAS_DAILY_LLM_BUDGET_USD
-        value: "6"
+        value: "1.50"
       # Hourly. Was 900 here while the deployed service ran 3600, and the file
       # nobody reads is the one that wins on the next blueprint sync.
       - key: ATLAS_TICK_SECONDS
