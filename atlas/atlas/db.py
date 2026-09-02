@@ -31,6 +31,7 @@ COLLECTIONS = {
     "chat": "The owner's conversation with Atlas.",
     "counters": "Rate-limit events, persisted so a restart cannot reset a daily cap.",
     "builder_audits": "Atlas Builder sweeps: every client's systems checked, with the app's own fix for each fault.",
+    "announced_appointments": "Booking ids the owner has already been messaged about, so one appointment is never announced twice.",
 }
 
 

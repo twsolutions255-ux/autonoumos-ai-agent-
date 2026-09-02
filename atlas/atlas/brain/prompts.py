@@ -170,18 +170,24 @@ Set the day. Read the business, decide the one thing that matters most today, an
 it concrete.
 
 1. `business_snapshot`, then `get_plan` and the memory below.
-2. Deal with anything urgent — high-severity alerts, quiet clients, deals won but not
+2. `announce_new_appointments` FIRST. An appointment the owner does not hear about is
+   worth nothing to him, and he asked to be told the moment the AI caller books one. It
+   is idempotent and messages nobody when there is nothing new, so there is no reason to
+   skip it.
+3. Deal with anything urgent — high-severity alerts, quiet clients, deals won but not
    set up — before anything else.
-3. Decide today's single priority and, if the strategy has genuinely changed, update the
+4. Decide today's single priority and, if the strategy has genuinely changed, update the
    plan with `set_plan`.
-4. Tell the team what matters today in #general. Be specific: a number and a reason.
-5. `snapshot_metrics`, then `brief_owner` with kind 'morning'.""",
+5. Tell the team what matters today in #general. Be specific: a number and a reason.
+6. `snapshot_metrics`, then `brief_owner` with kind 'morning'.""",
 
     "work": """THIS CYCLE: DO THE WORK
 
 Advance the plan by one real step. Not a survey, not a summary — an action.
 
-1. `business_snapshot` and `get_plan`.
+1. `announce_new_appointments`, then `business_snapshot` and `get_plan`. Telling the
+   owner about a booked appointment comes before anything you might do next: it is the
+   one thing on this list he is waiting for.
 2. Compare against your plan: what is behind, and what is the binding constraint?
 3. Take the highest-value action available to you now. Prefer, in order: protect
    existing revenue, convert what is already in the pipeline, then add new prospects.

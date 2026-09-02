@@ -6,4 +6,4 @@ here instead, so that anything which touches `atlas.tools` at all (the loop,
 the console, the tests) gets the complete surface rather than a subset that
 depends on which module happened to be named at the call site.
 """
-from . import builder, outreach  # noqa: F401
+from . import builder, outreach, pipeline  # noqa: F401
