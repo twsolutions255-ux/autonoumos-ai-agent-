@@ -317,3 +317,140 @@ async def test_every_send_in_a_batch_spends_the_hourly_cap(wired):
         "prospect_ids": ["p1", "p2"], "channel": "sms",
         "template_id_or_body": "Hello"})
     assert ctx.policy.limiter.used(ctx.policy.limits["outreach"]) == 2
+
+
+# --------------------------------------------------------- the prose is a claim
+
+def test_no_description_claims_the_endpoint_is_missing():
+    """The most dangerous defect this module has had, and it lived in
+    prose rather than in code.
+
+    For a few hours SEND_ENDPOINTS pointed at the live route while the module
+    docstring and all three tool descriptions still told the model that no send
+    endpoint existed, that every row came back "not_wired", and that nothing
+    reached the CRM. Those sentences are what the model reads before deciding
+    whether to fire. A fifty-row batch described as inert is one a model has
+    positive reason to run, and the same descriptions instructed it to report
+    the result as un-sent -- so fifty real messages could have been summarised
+    to the owner as nothing having happened.
+
+    The endpoints and the words about them are one claim. This fails when they
+    disagree.
+    """
+    wired_channels = {c for c, v in outreach.SEND_ENDPOINTS.items() if v}
+    assert wired_channels, "this test is meaningless if nothing is wired"
+
+    denials = ("NO HTTP endpoint", "no HTTP endpoint", "sends nothing",
+               "returns 'not_wired'", "comes back 'not_wired'",
+               "do not log a touch for it")
+    for name in ("send_prospect_email", "send_prospect_sms", "send_outreach_batch"):
+        tool = registry.get(name)
+        assert tool is not None, name
+        text = tool.description
+        for phrase in denials:
+            assert phrase not in text, (
+                "%s still tells the model %r while SEND_ENDPOINTS is wired for %s"
+                % (name, phrase, sorted(wired_channels)))
+        assert "SENDS FOR REAL" in text, name
+        assert "dry-run" in text, name
+
+    doc = outreach.__doc__ or ""
+    for phrase in ("There is no route of the shape", "declared and empty",
+                   "reachable"):
+        assert phrase not in doc, (
+            "the module docstring still denies the route: %r" % phrase)
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_id_is_messaged_once(wired):
+    """A batch is a list somebody approved. If an id appears twice, they
+    approved one message to that prospect, not two -- and nothing downstream
+    would catch it: the app route does not read previous touches before it
+    sends."""
+    client = FakeClient(prospects=[
+        {"id": pid, "name": "Clean Co " + pid, "phone": "+1555333000%d" % n,
+         "email": "%s@clean.test" % pid, "status": "new"}
+        for n, pid in enumerate(("p1", "p2", "p4"))])
+    ctx = harness(client)
+    result = await outreach._run(ctx, ["p1", "p1", "p2", "p1"], "sms", "", "Hi")
+    sends = [p for p in client.paths("POST") if p.endswith("/send")]
+    assert sends.count("/admin/prospects/p1/send") == 1
+    assert result["requested"] == 2
+    assert "repeated id" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_send_with_no_answer_is_not_a_failure_to_retry(wired):
+    """A read timeout on a POST the app completed leaves a message already
+    delivered. Calling that "failed" invites a retry, and the retry messages
+    the same stranger a second time. TWSClient never auto-retries a POST
+    precisely so that this decision is made deliberately, here."""
+    client = FakeClient(prospects=[
+        {"id": pid, "name": "Clean Co " + pid, "phone": "+1555333000%d" % n,
+         "email": "%s@clean.test" % pid, "status": "new"}
+        for n, pid in enumerate(("p1", "p2", "p4"))])
+    ctx = harness(client)
+
+    async def timeout_post(path, body=None, **kw):
+        client.calls.append(("POST", path, body or {}))
+        raise TimeoutError("read timeout")
+    client.post = timeout_post
+
+    result = await outreach._run(ctx, ["p1"], "sms", "", "Hi")
+    row = result["results"][0]
+    assert row["status"] == outreach.UNKNOWN_STATUS
+    assert row["status"] != "failed"
+    assert "MAY have been delivered" in row["reason"]
+    assert "do not retry" in row["reason"].lower()
+    assert result["unknown"] == 1 and result["sent"] == 0 and result["failed"] == 0
+    assert "Do NOT retry" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_the_apps_own_opt_out_is_counted_as_an_opt_out(wired):
+    """The pre-check and the route's own check establish the same fact: this
+    person asked us to stop. Counting the second as a failure reads as
+    "something went wrong, try again" for the one outcome that must never be
+    retried."""
+    client = FakeClient(prospects=[
+        {"id": pid, "name": "Clean Co " + pid, "phone": "+1555333000%d" % n,
+         "email": "%s@clean.test" % pid, "status": "new"}
+        for n, pid in enumerate(("p1", "p2", "p4"))])
+    ctx = harness(client)
+    client.answer_post = lambda path, payload: {
+        "outcome": "suppressed", "detail": "asked not to be contacted"}
+    result = await outreach._run(ctx, ["p1"], "sms", "", "Hi")
+    assert result["results"][0]["status"] == "opted_out"
+    assert result["skipped_opt_out"] == 1
+    assert result["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_every_send_in_a_batch_survives_a_restart(wired):
+    """The in-memory limiter was topped up per send, so the hourly cap held --
+    until a restart rebuilt the hour from storage, found ONE row for a
+    forty-send batch, and handed back an allowance already spent on real
+    people."""
+    client = FakeClient(prospects=[
+        {"id": pid, "name": "Clean Co " + pid, "phone": "+1555333000%d" % n,
+         "email": "%s@clean.test" % pid, "status": "new"}
+        for n, pid in enumerate(("p1", "p2", "p4"))])
+    ctx = harness(client)
+    rows = []
+
+    class Counters:
+        async def insert_one(self, doc):
+            rows.append(doc)
+
+    class Store:
+        def __getitem__(self, name):
+            assert name == "counters", name
+            return Counters()
+
+    ctx.store = Store()
+    result = await outreach._run(ctx, ["p1", "p2", "p4"], "sms", "", "Hi")
+    assert result["sent"] == 3, result
+    # dispatch persists one row for the call itself; the rest are written here,
+    # so the durable count matches what actually went out.
+    assert len(rows) == result["sent"] - 1
+    assert {r["bucket"] for r in rows} == {"outreach"}

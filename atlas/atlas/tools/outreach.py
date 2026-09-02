@@ -6,33 +6,37 @@ tool surface *sends*. `record_outreach_sent` only asserts that a human sent
 something, which is why its docstring in growth.py spends a paragraph warning
 that it can lie.
 
-This module is the missing verb, and it is deliberately honest about how much
-of it is currently real.
+This module is the missing verb, and since 2026-09-02 it is fully wired.
 
-WHAT THE APP ACTUALLY EXPOSES
------------------------------
-`server.py` contains `send_prospect_email()` and `send_prospect_sms()` — real
-functions, with the do-not-call assertion welded in — but **neither is reachable
-over HTTP**. Every caller is another internal function (booking confirmations,
-speed-to-lead, the SMS self-test). There is no route of the shape
-``POST /admin/prospects/{id}/send``, and none of the POST routes matching
-send/sms/message/email/outreach is a general prospect-outreach send:
+THIS SENDS FOR REAL
+-------------------
+``POST /admin/prospects/{id}/send`` exists in the app and is what these tools
+call. It re-checks the do-not-contact list, sends through
+``send_prospect_email()`` / ``send_prospect_sms()``, records the CRM touch
+itself, and answers with one word from the app's ``PROSPECT_SEND_OUTCOMES``:
+sent / suppressed / no_address / failed.
 
-    /admin/sites/{slug}/outreach     regenerates COPY, sends nothing
-    /admin/prospects/{id}/followup   DRAFTS the next message
-    /closer/messages                 internal staff chat
-    /admin/sms/self-test             texts a number you supply, as a test
-    /admin/system-test/email         same, for email
+**This paragraph used to say the opposite, and that was the most dangerous
+thing in the file.** For a few hours the endpoints were wired while the
+docstring and all three tool descriptions still told the model that no send
+route existed, that every row came back ``not_wired``, and that nothing was
+written to the CRM — in other words, that calling this was a free rehearsal.
+A model told a fifty-row batch is inert has a positive reason to run one. The
+descriptions then went further and instructed it to report the result as
+un-sent, so fifty real messages could have been summarised to the owner as
+nothing having happened. Nothing about the code was wrong; the sentences
+handed to the thing that decides were.
 
-So the send endpoints below are declared and empty. Every send therefore
-reports ``not_wired`` and NOTHING is written to the CRM — logging a touch for a
-message that never left would be exactly the false assertion growth.py warns
-about, and it costs the prospect permanently.
+The rule that leaves behind: SEND_ENDPOINTS and the prose are one claim, and
+``test_no_description_claims_the_endpoint_is_missing`` fails the build if they
+disagree again.
 
-The surrounding machinery is real and runs today: the batch cap, the do-not-
-contact check against the app's suppression list, the per-prospect failure
-accounting, and the CRM write that fires the moment a send succeeds. Point
-SEND_ENDPOINTS at a real route and this module sends for real, unchanged.
+``not_wired`` still exists, and now means only what it says: the route is
+unexpectedly absent. It is the one status under which nothing left.
+
+The surrounding machinery: the batch cap, the do-not-contact check against the
+app's suppression list, per-prospect failure accounting, and de-duplication of
+the id list before anybody is contacted.
 
 WHAT COUNTS AS OPTED OUT
 ------------------------
@@ -47,6 +51,8 @@ out without a round trip.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..guardrails.policy import Risk
@@ -61,11 +67,8 @@ MAX_BATCH = 50
 
 CHANNELS = ("email", "sms")
 
-#: The app route that really sends, per channel. Both are None because the app
-#: has none — see the module docstring. Filling one in is the ONLY change
-#: needed to make sends real; everything downstream (the CRM touch, the counts)
-#: already handles a success.
-#: Wired on 2026-09-02 to POST /admin/prospects/{id}/send, which the app added
+#: The app route that really sends, per channel. Wired on 2026-09-02 to
+#: POST /admin/prospects/{id}/send, which the app added
 #: for exactly this caller. The route checks the do-not-contact list, sends,
 #: and records the CRM touch itself; it answers with an `outcome` word from
 #: the app's PROSPECT_SEND_OUTCOMES: sent / suppressed / no_address / failed.
@@ -73,6 +76,19 @@ SEND_ENDPOINTS: dict[str, Optional[str]] = {
     "email": "/admin/prospects/{prospect_id}/send",
     "sms": "/admin/prospects/{prospect_id}/send",
 }
+
+#: The statuses whose meaning is "nothing left, and it is safe to try again
+#: later". Everything else is either a real send or an unknown, and an unknown
+#: must never be retried -- see UNKNOWN_STATUS.
+SAFE_TO_RETRY = ("failed",)
+
+#: The status for "we do not know whether this person was messaged". A read
+#: timeout on a POST the app may well have completed is NOT the same as the app
+#: declining, and the difference matters more here than anywhere else in this
+#: module: retrying a send that actually happened messages a stranger twice.
+#: TWSClient deliberately never auto-retries a POST, so without this the two
+#: collapse into "failed" and invite exactly that retry.
+UNKNOWN_STATUS = "unknown"
 
 #: How the app's outcome words map onto this tool's statuses. "suppressed"
 #: becomes opted_out so the batch counts it with the pre-checked opt-outs;
@@ -137,6 +153,35 @@ async def _opt_out_state(client, prospect: dict) -> tuple:
     return ("opted_out", "on the app's do-not-contact list") if hit else ("clear", "")
 
 
+async def _count_one_send(ctx: ToolContext) -> None:
+    """Spend one unit of the hourly outreach cap, durably.
+
+    `dispatch` persists ONE counter row for the whole tool call, so a batch of
+    forty sends left a single row. In memory the limiter was topped up per
+    send and the cap held -- until a restart, when `_hydrate_rate_limits`
+    rebuilt the hour from storage and restored 1 instead of 40, handing back
+    an allowance that had already been spent on real strangers.
+
+    Both halves are written here for that reason. A failure to record is
+    logged and swallowed: the message has already gone, and raising now would
+    turn a bookkeeping problem into a lost send report.
+    """
+    try:
+        ctx.policy.limiter.record("outreach")
+    except Exception:
+        log.exception("atlas: could not count an outreach send in memory")
+    store = getattr(ctx, "store", None)
+    if store is None:
+        return
+    try:
+        await store["counters"].insert_one({
+            "id": str(uuid.uuid4()), "bucket": "outreach",
+            "tool": "send_outreach_batch",
+            "at": datetime.now(timezone.utc).isoformat()})
+    except Exception:
+        log.exception("atlas: could not persist an outreach counter")
+
+
 async def _send_one(client, channel: str, prospect: dict, subject: str,
                     body: str) -> tuple:
     """(status, reason). status is 'sent', 'opted_out', 'not_wired' or 'failed'.
@@ -159,7 +204,14 @@ async def _send_one(client, channel: str, prospect: dict, subject: str,
     try:
         res = await client.post(endpoint.format(prospect_id=pid), payload)
     except Exception as e:
-        return "failed", f"the app refused the send: {str(e)[:200]}"
+        # "The app said no" and "we never heard back" are different facts, and
+        # only the first is safe to retry. A read timeout on a POST the app
+        # completed leaves a message already delivered; calling that "failed"
+        # invites a retry that messages the same stranger a second time.
+        return UNKNOWN_STATUS, (
+            "the send did not come back with an answer (%s). It MAY have been "
+            "delivered -- do not retry it; check the prospect's touches in the "
+            "CRM before doing anything else with them." % str(e)[:160])
 
     outcome = str((res or {}).get("outcome") or "") if isinstance(res, dict) else ""
     status = _APP_OUTCOMES.get(outcome, "failed")
@@ -172,7 +224,19 @@ async def _send_one(client, channel: str, prospect: dict, subject: str,
 async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
                subject: str, body: str) -> dict:
     """The whole of a send, batch or single. Never raises for one prospect."""
-    ids = [str(p) for p in (prospect_ids or []) if str(p).strip()]
+    # De-duplicated, in the order given. A repeated id in one batch is two
+    # messages to one person, and nothing downstream would catch it: the app
+    # route does not look at previous touches before sending.
+    ids: list = []
+    duplicates = 0
+    for raw in (prospect_ids or []):
+        pid = str(raw).strip()
+        if not pid:
+            continue
+        if pid in ids:
+            duplicates += 1
+            continue
+        ids.append(pid)
     if not ids:
         return {"refused": "No prospect ids were given, so nothing was sent."}
     if channel not in CHANNELS:
@@ -193,7 +257,7 @@ async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
         return {"refused": f"Could not read the prospect list, so nothing was sent: {e}"}
 
     results: list = []
-    sent = skipped = failed = 0
+    sent = skipped = failed = unknown = 0
     for pid in ids:
         prospect = known.get(pid)
         if prospect is None:
@@ -221,10 +285,18 @@ async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
             # send after the first is counted here. Otherwise a batch of forty
             # would spend one unit of the hourly cap.
             if sent > 1:
-                try:
-                    ctx.policy.limiter.record("outreach")
-                except Exception:
-                    log.exception("atlas: could not count an outreach send")
+                await _count_one_send(ctx)
+        elif status == "opted_out":
+            # The app's own suppression check caught what the pre-check did
+            # not -- the person still asked us to stop, which is the same fact
+            # and belongs in the same column. Counting it as a failure would
+            # read as "something went wrong, try again" for the one outcome
+            # that must never be retried.
+            skipped += 1
+        elif status == UNKNOWN_STATUS:
+            # Deliberately its own count. It is not a success to report and not
+            # a failure to retry.
+            unknown += 1
         else:
             # 'not_wired' counts as failed, not as a quiet success. An agent
             # that reported "ok" here would be claiming a send that never was.
@@ -232,12 +304,23 @@ async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
         results.append({"prospect_id": pid, "status": status, "reason": reason})
 
     not_wired = sum(1 for r in results if r["status"] == "not_wired")
+    notes = []
+    if duplicates:
+        notes.append(f"{duplicates} repeated id(s) were removed before sending, so "
+                     f"nobody was messaged twice by this call.")
     if not_wired:
-        note = (f"{not_wired} of {len(ids)} reached nobody: the app exposes no send "
-                f"endpoint for prospects, so nothing was sent and NO CRM touch was "
-                f"written for them. Do not claim these were sent, and do not retry.")
-    else:
-        note = "Counts are per prospect; read the reasons before reporting."
+        notes.append(f"{not_wired} of {len(ids)} reached nobody: the send route was "
+                     f"unexpectedly absent, so nothing was sent and NO CRM touch was "
+                     f"written for them. Do not claim these were sent.")
+    if unknown:
+        notes.append(f"{unknown} send(s) never came back with an answer and MAY have "
+                     f"been delivered. Do NOT retry them; say so plainly in your "
+                     f"summary and check the CRM touches before working those "
+                     f"prospects again.")
+    if sent:
+        notes.append(f"{sent} message(s) actually reached a real person and cannot be "
+                     f"un-sent.")
+    notes.append("Counts are per prospect; read the reasons before reporting.")
 
     return {
         "channel": channel,
@@ -245,8 +328,9 @@ async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
         "sent": sent,
         "skipped_opt_out": skipped,
         "failed": failed,
+        "unknown": unknown,
         "results": results,
-        "note": note,
+        "note": " ".join(notes),
     }
 
 
@@ -263,10 +347,13 @@ async def _run(ctx: ToolContext, prospect_ids: list, channel: str,
 be un-emailed. """ + _GATE + """
 Check the prospect is not on the do-not-contact list first; this tool checks too, and
 refuses rather than guessing when the list cannot be asked.
-IMPORTANT, READ BEFORE USING: the app currently has NO HTTP endpoint that sends email to
-a prospect, so this returns 'not_wired' and sends nothing. That is a fact about the app,
-not a failure to retry. Report it as un-sent and do not log a touch for it.
-Returns counts — sent / skipped_opt_out / failed — with a reason per prospect.""",
+IMPORTANT, READ BEFORE USING: this SENDS FOR REAL. A row that comes back 'sent' is an
+email a stranger has received and cannot un-receive, and the app has already recorded the
+CRM touch and moved them to 'contacted'. There is no dry-run: do not call this to see
+what would happen.
+A row that comes back 'unknown' MAY have been delivered — never retry it; say so and
+check the CRM.
+Returns counts — sent / skipped_opt_out / failed / unknown — with a reason per prospect.""",
     schema={
         "type": "object",
         "properties": {
@@ -291,10 +378,12 @@ async def send_prospect_email(ctx: ToolContext, prospect_id: str, subject: str,
     + _GATE + """
 The do-not-contact list is checked first, and a check that cannot be made counts as a
 refusal, never as permission.
-IMPORTANT, READ BEFORE USING: the app currently has NO HTTP endpoint that texts a
-prospect, so this returns 'not_wired' and sends nothing. Report it as un-sent; do not
-retry it and do not log a touch for it.
-Returns counts — sent / skipped_opt_out / failed — with a reason per prospect.""",
+IMPORTANT, READ BEFORE USING: this SENDS FOR REAL. A row that comes back 'sent' is a
+text on a real stranger's phone and cannot be unsent; the app has already recorded the
+CRM touch. There is no dry-run mode.
+A row that comes back 'unknown' MAY have been delivered — never retry it; say so and
+check the CRM.
+Returns counts — sent / skipped_opt_out / failed / unknown — with a reason per prospect.""",
     schema={
         "type": "object",
         "properties": {
@@ -321,8 +410,12 @@ app's do-not-contact list and skipped if listed; a prospect whose status cannot 
 established is failed rather than sent to.
 One prospect failing does not stop the rest: you get a per-prospect reason and the
 counts sent / skipped_opt_out / failed.
-IMPORTANT, READ BEFORE USING: the app currently has NO HTTP endpoint that sends to a
-prospect, so every row comes back 'not_wired' and nothing is written to the CRM.""",
+IMPORTANT, READ BEFORE USING: this SENDS FOR REAL, to every prospect in the list at
+once. Each 'sent' row is a message a stranger has received and cannot un-receive. There
+is no dry-run mode and no way to recall a batch: do not call this to exercise the
+pipeline or to see what it would do.
+Repeated ids are removed before sending. A row that comes back 'unknown' MAY have been
+delivered — never retry it.""",
     schema={
         "type": "object",
         "properties": {
