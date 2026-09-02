@@ -195,6 +195,37 @@ async def test_the_next_cycle_can_see_what_the_last_one_did():
 
 
 @pytest.mark.asyncio
+async def test_a_refused_action_is_named_to_the_next_cycle_so_it_is_not_asked_again():
+    """At 'recommend' every action is a denial, so without this each work
+    cycle re-found the same gap, called the same tool, was refused the same
+    way and recommended the same thing. Approvals already had a "do not
+    queue again" line; denials get the same, as a list, not prose."""
+    rt = await build_runtime(ATLAS_AUTONOMY="recommend", ATLAS_SANDBOX="true")
+    before = await rt._opening_message("work", "")
+    assert "ALREADY REFUSED" not in before          # nothing refused yet
+
+    install(rt.engine, [
+        SimpleNamespace(content=[tool_block("release_cold_call_batch", {}, "t1")],
+                        stop_reason="tool_use", usage=usage()),
+        SimpleNamespace(content=[text_block(
+            "Recommend releasing the batch; I cannot do it myself.")],
+            stop_reason="end_turn", usage=usage()),
+    ])
+    record = await rt.run_cycle("work")
+    assert record["status"] == "done" and state.released == 0
+
+    after = await rt._opening_message("work", "")
+    assert "ALREADY REFUSED" in after
+    assert "release_cold_call_batch" in after
+    assert "blocked by autonomy" in after
+    assert "do not recommend it again" in after    # the recommend-rung tail
+    # The list is not fed to the model's own prose summary twice: one line
+    # per tool however many times it was refused.
+    assert after.count("  - release_cold_call_batch (") == 1
+    await rt.close()
+
+
+@pytest.mark.asyncio
 async def test_a_cycle_that_crashes_still_leaves_a_record():
     rt = await build_runtime()
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from ..config import Settings
@@ -280,11 +280,58 @@ class Runtime:
                     f"You have {pending} action(s) waiting on the owner's approval. "
                     f"Do not queue them again; chase them in your briefing if they matter.")
 
+            refused = await self._recent_refusals()
+            if refused:
+                parts.append("ALREADY REFUSED -- DO NOT TRY THESE AGAIN\n\n" + refused)
+
         if note:
             parts.append(f"THE OWNER ADDED\n\n{note}")
 
         parts.append("Begin. Look at the real numbers first.")
         return "\n\n".join(parts)
+
+    async def _recent_refusals(self, hours: int = 48) -> str:
+        """Policy denials from the last two days, one line per tool.
+
+        The approvals queue already gets a "do not queue them again" line.
+        Denials did not, and at the `recommend` rung every action is a
+        denial -- so each work cycle read the same numbers, found the same
+        gap, called the same tool, was refused the same way, and recommended
+        the same thing. Not a memory fault: the world cannot change until the
+        owner acts, and nobody was telling the model that it had already
+        asked. The three-cycle summaries above are prose, and a model does
+        not reliably notice its own repetition in prose. This is a list.
+        """
+        cutoff = now() - timedelta(hours=hours)
+        rows = await self.store["actions"].find(
+            {"kind": "tool", "outcome": "deny"},
+            {"_id": 0, "tool": 1, "gate": 1, "reason": 1, "at": 1},
+        ).sort("at", -1).to_list(60)
+        seen: dict = {}
+        for r in rows:
+            try:
+                when = datetime.fromisoformat(r["at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            if when < cutoff or r.get("tool") in seen:
+                continue
+            seen[r["tool"]] = r
+        if not seen:
+            return ""
+        lines = [f"  - {t} (blocked by {r.get('gate') or 'policy'}): "
+                 f"{(r.get('reason') or '')[:200]}" for t, r in seen.items()]
+        autonomy = str(getattr(self.settings, "autonomy", "") or "")
+        tail = ""
+        if autonomy == "recommend":
+            tail = ("\n\nYour autonomy is 'recommend': you cannot act, only "
+                    "recommend. If your last cycles already recommended the same "
+                    "thing and the numbers have not moved, do not recommend it "
+                    "again. Say what is NEW since then, or say that nothing has "
+                    "changed and stop -- a short cycle is the right answer.")
+        return ("Nothing about your authority has changed since these were "
+                "refused:\n" + "\n".join(lines) + tail)
 
     async def _close_cycle(self, record: dict, *, summary: str = "",
                            error: str = "") -> dict:
